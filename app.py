@@ -82,11 +82,18 @@ def _rclone_pull_dir(remote, local_dir):
     ts = datetime.now().strftime("%H:%M:%S")
     try:
         os.makedirs(local_dir, exist_ok=True)
-        subprocess.run(
+        result = subprocess.run(
             ["rclone", "copy", "-q", remote, local_dir] + RCLONE_RATE_LIMIT_ARGS,
-            check=True, timeout=1800,
+            capture_output=True, text=True, timeout=1800,
         )
-        print(f"[{ts}] [*] Da keo tu Drive: {remote} -> {local_dir}", flush=True)
+        if result.returncode == 0:
+            print(f"[{ts}] [*] Da keo tu Drive: {remote} -> {local_dir}", flush=True)
+        elif "directory not found" in result.stderr.lower():
+            # Binh thuong: episode nay chua tung backup len Drive truoc do,
+            # khong phai loi that.
+            print(f"[{ts}] [*] Chua co du lieu cu tren Drive cho {remote} (binh thuong lan dau).", flush=True)
+        else:
+            print(f"[{ts}] [!] Keo tu Drive LOI ({remote}): {result.stderr.strip()[-500:]}", flush=True)
     except Exception as exc:
         print(f"[{ts}] [!] Keo tu Drive LOI ({remote}): {exc}", flush=True)
 

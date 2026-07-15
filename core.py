@@ -110,10 +110,19 @@ def ensure_models(hf_token: str, progress_cb=None):
     if _diarization_pipeline is None:
         if progress_cb:
             progress_cb("Đang tải model diarization (pyannote)...")
-        _diarization_pipeline = _with_retry(
-            Pipeline.from_pretrained, "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token, progress_cb=progress_cb,
-        ).to(_device)
+        # pyannote.audio doi ten tham so use_auth_token -> token o ban moi; thu
+        # token truoc, neu ban cu chua ho tro (TypeError) thi fallback use_auth_token.
+        try:
+            pipeline = _with_retry(
+                Pipeline.from_pretrained, "pyannote/speaker-diarization-3.1",
+                token=hf_token, progress_cb=progress_cb,
+            )
+        except TypeError:
+            pipeline = _with_retry(
+                Pipeline.from_pretrained, "pyannote/speaker-diarization-3.1",
+                use_auth_token=hf_token, progress_cb=progress_cb,
+            )
+        _diarization_pipeline = pipeline.to(_device)
 
     if _gender_model is None:
         if progress_cb:
