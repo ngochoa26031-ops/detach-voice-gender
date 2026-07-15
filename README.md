@@ -70,6 +70,8 @@ tải lại model resume. Cách bật:
 ## Chạy local / máy khác có GPU
 
 ```bash
+# Cài torch đúng bản CUDA của máy bạn TRƯỚC (xem https://pytorch.org/get-started/locally/)
+# requirements.txt cố tình không liệt kê torch để tránh pip cài đè bản không khớp CUDA.
 pip install -r requirements.txt
 export HF_TOKEN=hf_xxx   # đã accept license 2 model pyannote ở trên
 python app.py

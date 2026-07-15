@@ -1,8 +1,10 @@
+# torch/torchaudio KHONG liet ke o day: Kaggle/Colab da co san ban GPU khop dung
+# CUDA driver cua ho, pip install torch tu PyPI de cai nham ban CPU-only hoac
+# khac CUDA version, lam mat GPU. Neu chay local, tu cai torch theo huong dan
+# rieng cua pytorch.org cho dung CUDA cua may ban truoc khi pip install -r nay.
 gradio
 pyannote.audio
 speechbrain
-torch
-torchaudio
 transformers
 librosa
 pysrt
