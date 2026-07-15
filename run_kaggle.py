@@ -1,7 +1,12 @@
-"""Bootstrap chay tren Kaggle: cai thu vien (chi neu thieu), doc HF_TOKEN tu
-Kaggle Secret, cau hinh rclone (tuy chon) de backup input/output/resume len
-Google Drive, roi mo app Gradio. Notebook run_kaggle.ipynb luon tai ban moi
-nhat cua file nay tu GitHub nen khong can sua notebook moi khi code cap nhat.
+"""Bootstrap chay tren Kaggle HOAC Colab: cai thu vien (chi neu thieu), doc
+HF_TOKEN tu Secret cua tung nen tang, cau hinh luu tru lau dai roi mo app
+Gradio. Notebook (run_kaggle.ipynb) luon tai ban moi nhat cua file nay tu
+GitHub nen khong can sua notebook moi khi code cap nhat.
+
+Tren Kaggle: du lieu nam trong /kaggle/working (mat khi het session), co the
+bat rclone (tuy chon) de backup len Google Drive.
+Tren Colab: tu mount Google Drive that (khong can rclone), du lieu nam thang
+trong MyDrive/detach-voice-gender nen khong bao gio mat.
 """
 import importlib.util
 import os
@@ -10,8 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path("/kaggle/working")
 RCLONE_CONF_PATH = Path.home() / ".config" / "rclone" / "rclone.conf"
+REPO_URL = "https://github.com/ngochoa26031-ops/detach-voice-gender.git"
 
 
 def run(cmd, **kwargs):
@@ -41,21 +46,30 @@ def load_hf_token():
     token = os.environ.get("HF_TOKEN", "").strip()
     if token:
         return token
+    # Kaggle Secrets
     try:
         from kaggle_secrets import UserSecretsClient
         return UserSecretsClient().get_secret("HF_TOKEN")
-    except Exception as exc:
-        raise RuntimeError(
-            "Khong tim thay HF_TOKEN. Add-ons -> Secrets -> them secret ten HF_TOKEN "
-            "(token HuggingFace, da accept license pyannote/speaker-diarization-3.1 "
-            "va pyannote/segmentation-3.0)."
-        ) from exc
+    except Exception:
+        pass
+    # Colab Secrets (icon chia khoa o sidebar)
+    try:
+        from google.colab import userdata
+        return userdata.get("HF_TOKEN")
+    except Exception:
+        pass
+    raise RuntimeError(
+        "Khong tim thay HF_TOKEN. Tren Kaggle: Add-ons -> Secrets -> them secret "
+        "ten HF_TOKEN. Tren Colab: bam icon chia khoa o sidebar trai -> them secret "
+        "ten HF_TOKEN. (Token HuggingFace da accept license "
+        "pyannote/speaker-diarization-3.1 va pyannote/segmentation-3.0.)"
+    )
 
 
 def setup_rclone_from_secret():
-    """Tuy chon: neu co Kaggle Secret 'RCLONE_CONF_B64', cai rclone + nap config
-    de backup input/output/resume len Google Drive. Bo qua neu khong co secret nay
-    hoac khong bien GENDERSFX_RCLONE_*_REMOTE nao duoc dat."""
+    """Chi dung tren Kaggle: neu co Kaggle Secret 'RCLONE_CONF_B64', cai rclone +
+    nap config de backup input/output/resume len Google Drive. Bo qua neu khong
+    co secret nay hoac khong bien GENDERSFX_RCLONE_*_REMOTE nao duoc dat."""
     has_remote_env = any(
         os.environ.get(k, "").strip()
         for k in ("GENDERSFX_RCLONE_REMOTE", "GENDERSFX_RCLONE_INPUT_REMOTE",
@@ -78,23 +92,60 @@ def setup_rclone_from_secret():
               f"Se KHONG tu backup len Drive duoc.", flush=True)
 
 
-def main():
-    app_dir = ROOT / "detach-voice-gender-src"
+def detect_platform_dirs():
+    """Tra ve (code_root, data_root):
+    - code_root: noi git clone code, luon la dia tam thoi (khong can ben vung).
+    - data_root: noi chua input/output/resume.
+        + Kaggle: /kaggle/working/detach-voice-gender (mat khi het session,
+          co the bat rclone backup len Drive - xem setup_rclone_from_secret).
+        + Colab: tu mount Google Drive that, du lieu nam thang trong
+          MyDrive/detach-voice-gender nen KHONG mat khi het session, khong
+          can rclone.
+        + Khac (may local): thu muc hien tai.
+    """
+    if Path("/kaggle/working").is_dir():
+        root = Path("/kaggle/working")
+        print("[*] Phat hien Kaggle.", flush=True)
+        return root, root / "detach-voice-gender"
 
-    # Moi lan chay deu lay code moi nhat tu GitHub, nen notebook Kaggle co the giu nguyen.
+    if Path("/content").is_dir():
+        print("[*] Phat hien Google Colab.", flush=True)
+        drive_root = Path("/content/drive")
+        my_drive = drive_root / "MyDrive"
+        if not my_drive.is_dir():
+            try:
+                from google.colab import drive
+                print("[*] Dang mount Google Drive...", flush=True)
+                drive.mount(str(drive_root))
+            except Exception as exc:
+                print(f"[!] Khong mount duoc Google Drive ({exc}). "
+                      f"Du lieu se chi luu tam trong may ao Colab, mat khi het session.",
+                      flush=True)
+        code_root = Path("/content")
+        data_root = (my_drive if my_drive.is_dir() else code_root) / "detach-voice-gender"
+        return code_root, data_root
+
+    cwd = Path.cwd()
+    return cwd, cwd / "detach-voice-gender"
+
+
+def main():
+    code_root, data_root = detect_platform_dirs()
+    app_dir = code_root / "detach-voice-gender-src"
+
+    # Moi lan chay deu lay code moi nhat tu GitHub, nen notebook co the giu nguyen.
     subprocess.run(["rm", "-rf", str(app_dir)], check=False)
-    run(["git", "clone", "-q",
-         "https://github.com/ngochoa26031-ops/detach-voice-gender.git", str(app_dir)])
+    run(["git", "clone", "-q", REPO_URL, str(app_dir)])
 
     install_requirements(app_dir)
     setup_rclone_from_secret()
 
     os.environ["HF_TOKEN"] = load_hf_token()
-    os.environ["GENDERSFX_ROOT"] = str(ROOT / "detach-voice-gender")
+    os.environ["GENDERSFX_ROOT"] = str(data_root)
     os.environ["GENDERSFX_SHARE"] = "1"
     os.environ["PYTHONUNBUFFERED"] = "1"
 
-    print(f"[*] Thu muc lam viec: {os.environ['GENDERSFX_ROOT']} (input/output/resume)", flush=True)
+    print(f"[*] Thu muc lam viec: {data_root} (input/output/resume)", flush=True)
     print("[*] Dang mo Gradio app...", flush=True)
 
     os.chdir(app_dir)
