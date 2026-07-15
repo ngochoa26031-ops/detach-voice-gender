@@ -1,44 +1,68 @@
 # detach-voice-gender
 
-Detect speaker gender (male/female) per SRT subtitle block from an mp4/mp3
-recording, using speaker diarization + speech-based gender classification.
-Designed to run on Kaggle Notebooks with GPU.
+Xác định **từng block SRT** là giọng **nam hay nữ** đang nói, từ 1 file
+video/audio + srt tách bằng speech-to-text (tiếng Trung hay ngôn ngữ khác đều
+được, vì model dựa trên đặc trưng âm học chứ không phải nội dung lời nói).
 
-## Pipeline
+- **Speaker diarization** — [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)
+  tách audio thành "ai nói khi nào".
+- **Gender classification** — [`audeering/wav2vec2-large-robust-24-ft-age-gender`](https://huggingface.co/audeering/wav2vec2-large-robust-24-ft-age-gender)
+  phân loại nam/nữ/trẻ em cho từng speaker, gộp xác suất qua tất cả đoạn nói
+  của speaker đó để ổn định (không đoán riêng lẻ từng block).
+- Mỗi block SRT được gán vào turn diarization overlap nhiều nhất, thừa hưởng
+  nhãn giới tính của speaker đó.
 
-1. **Speaker diarization** — [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)
-   splits the audio into "who spoke when" turns.
-2. **Gender classification** — [`audeering/wav2vec2-large-robust-24-ft-age-gender`](https://huggingface.co/audeering/wav2vec2-large-robust-24-ft-age-gender)
-   classifies each speaker's segments as female/male/child, aggregated per
-   speaker for stability (not guessed block-by-block).
-3. Each SRT block is mapped to the diarization turn it overlaps most, and
-   inherits that speaker's gender label.
+---
 
-## One-time setup (per Kaggle account)
+## 🚀 Chạy trên Kaggle (upload → chạy → tải về)
 
-1. Add-ons → Secrets → add secret named `HF_TOKEN` with your
-   [HuggingFace access token](https://huggingface.co/settings/tokens).
-2. On huggingface.co, accept the user agreement for:
-   - `pyannote/speaker-diarization-3.1`
-   - `pyannote/segmentation-3.0`
-3. Notebook Settings → Accelerator → GPU (e.g. T4 x2).
+1. Tạo notebook mới trên Kaggle (hoặc import [`run_kaggle.ipynb`](run_kaggle.ipynb)).
+2. **Add-ons → Secrets** → thêm secret tên `HF_TOKEN` (token HuggingFace,
+   xem [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)).
+   Nhớ **accept license** cho `pyannote/speaker-diarization-3.1` và
+   `pyannote/segmentation-3.0` trên trang HuggingFace của 2 model đó.
+   *(Chỉ cần làm 1 lần cho mỗi tài khoản Kaggle.)*
+3. `Settings → Accelerator → GPU`, `Settings → Internet → On`.
+4. Bấm **Run**. Notebook tự clone code mới nhất, cài thư viện (chỉ lần đầu
+   trong session), mở app **Gradio**.
+5. Trong app: upload file video/audio + file `.srt` tương ứng ngay trên web,
+   bấm **▶ Xác định giới tính**, tải `gender.csv` và `annotated.srt` ngay
+   trên web khi xong.
 
-## Usage
+> ⚠️ `/kaggle/working` mất khi session kết thúc — nhớ tải kết quả về máy
+> trước khi dừng session.
 
-1. Add Input → upload your `.mp4`/`.mp3` + matching `.srt` (any file names,
-   just keep them in the same folder/dataset).
-2. Click **Run All**.
-3. Results appear in `/kaggle/working/output/<episode_name>/`:
-   - `gender.csv` — index, start, end, speaker, gender, confidence, text
-   - `annotated.srt` — original srt with `[speakerX|gender]` prefix per line
+## Chạy local / máy khác có GPU
 
-Multiple episodes can be processed in one run if uploaded as separate
-input folders — the script auto-discovers every media+srt pair under
-`/kaggle/input`.
+```bash
+pip install -r requirements.txt
+export HF_TOKEN=hf_xxx   # đã accept license 2 model pyannote ở trên
+python app.py
+```
 
-## Files
+Mở link Gradio hiện trong terminal, upload file, chạy như trên Kaggle.
 
-- `gender_pipeline.py` — the full pipeline, paste into a Kaggle Notebook
-  (cells are separated by `# %%`) or run as a single script with Run All.
-- `sample/` — a 30-minute trimmed sample (audio excluded from git, srt only)
-  for quick testing.
+## Output
+
+- `gender.csv` — `index, start, end, speaker, gender, confidence, text`
+- `annotated.srt` — srt gốc, thêm tiền tố `[speakerX|gender]` mỗi dòng thoại
+
+## Cấu trúc
+
+| File | Vai trò |
+|------|---------|
+| `core.py` | Pipeline lõi: diarization + gender classification + map vào SRT |
+| `app.py` | Gradio UI: upload media+srt, chạy, tải kết quả |
+| `run_kaggle.py` | Bootstrap Kaggle: clone code mới nhất, cài thư viện, đọc `HF_TOKEN` từ Secret, chạy `app.py` |
+| `run_kaggle.ipynb` | Notebook Kaggle 1-cell, luôn gọi `run_kaggle.py` mới nhất |
+| `requirements.txt` | Thư viện cần cho `app.py`/`core.py` |
+| `sample/` | Mẫu 30 phút đầu để test nhanh (chỉ giữ `.srt`, audio loại khỏi git) |
+
+## Ghi chú
+
+- Model gender/diarization tải qua HuggingFace hub cache — trong 1 session
+  Kaggle, gọi nhiều lần không tải lại; giữa các session khác nhau vẫn phải
+  tải lại (vài trăm MB, vài phút) vì `/kaggle/working` không tồn tại xuyên
+  session.
+- Đây là pipeline nghiên cứu, độ chính xác gender phụ thuộc chất lượng
+  diarization (giọng nói chồng lấn, nhiễu nền có thể làm giảm độ chính xác).

@@ -1,0 +1,9 @@
+gradio
+pyannote.audio
+speechbrain
+torch
+torchaudio
+transformers
+librosa
+pysrt
+soundfile
