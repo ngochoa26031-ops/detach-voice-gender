@@ -151,8 +151,8 @@ def list_input_episodes():
 
 
 def _episode_done(episode_name):
-    csv_path = Path(OUTPUT_DIR) / episode_name / "gender.csv"
-    return csv_path.is_file() and csv_path.stat().st_size > 0
+    txt_path = Path(OUTPUT_DIR) / episode_name / "gender.txt"
+    return txt_path.is_file() and txt_path.stat().st_size > 0
 
 
 def _episode_lock_path(episode_name):
@@ -191,7 +191,7 @@ def _run_pipeline(media_path, srt_path, episode_name, progress=None):
                          os.path.join(RESUME_DIR, episode_name))
 
     out_dir = Path(OUTPUT_DIR) / episode_name
-    csv_path, srt_out_path = process_episode(
+    txt_path, srt_out_path = process_episode(
         media_path, srt_path, out_dir, HF_TOKEN,
         resume_dir=RESUME_DIR, episode_name=episode_name, progress_cb=report,
     )
@@ -201,7 +201,7 @@ def _run_pipeline(media_path, srt_path, episode_name, progress=None):
     if RCLONE_RESUME_REMOTE:
         _rclone_push_dir(os.path.join(RESUME_DIR, episode_name),
                          f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}")
-    return csv_path, srt_out_path
+    return txt_path, srt_out_path
 
 
 PROCESS_LOCK = threading.Lock()
@@ -243,13 +243,13 @@ def run_ui(episode_choice, media_upload, srt_upload, progress=gr.Progress()):
                     f"doi no xong roi thu lai (xem log console de biet tien do)."
                 )
             try:
-                csv_path, srt_out_path = _run_pipeline(media_path, srt_path, episode_name, progress)
+                txt_path, srt_out_path = _run_pipeline(media_path, srt_path, episode_name, progress)
             finally:
                 _release_lock(lock_path)
             progress(1, desc="Xong!")
             if EXIT_AFTER_DONE:
                 _schedule_exit_after_done()
-            return str(csv_path), str(srt_out_path), f"OK: da xu ly xong '{episode_name}'."
+            return str(txt_path), str(srt_out_path), f"OK: da xu ly xong '{episode_name}'."
     except gr.Error:
         raise
     except Exception as exc:
@@ -439,13 +439,13 @@ with gr.Blocks(title="detach-voice-gender") as demo:
                 srt_in = gr.File(label="... hoac Upload file .srt")
             btn = gr.Button("Xac dinh gioi tinh", variant="primary")
         with gr.Column():
-            csv_out = gr.File(label="gender.csv")
+            txt_out = gr.File(label="gender.txt")
             srt_out = gr.File(label="annotated.srt")
             log = gr.Textbox(label="Log / Trang thai", lines=10)
 
     refresh_btn.click(refresh_input_list, outputs=[episode_dd])
     clear_btn.click(clear_old_data, outputs=[episode_dd, log])
-    btn.click(run_ui, inputs=[episode_dd, media_in, srt_in], outputs=[csv_out, srt_out, log])
+    btn.click(run_ui, inputs=[episode_dd, media_in, srt_in], outputs=[txt_out, srt_out, log])
 
 if __name__ == "__main__":
     start_autowatch()

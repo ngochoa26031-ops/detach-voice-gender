@@ -42,12 +42,12 @@ def main():
     threading.Thread(target=heartbeat, daemon=True).start()
 
     try:
-        csv_path, srt_out_path = process_episode(
+        txt_path, srt_out_path = process_episode(
             media_path, srt_path, out_dir, hf_token,
             resume_dir=resume_dir, episode_name=episode_name, progress_cb=report,
         )
         done.set()
-        print(f"[{episode_name}] XONG: {csv_path} | {srt_out_path}", flush=True)
+        print(f"[{episode_name}] XONG: {txt_path} | {srt_out_path}", flush=True)
     except Exception as exc:
         done.set()
         print(f"[{episode_name}] LOI: {exc}", flush=True)
