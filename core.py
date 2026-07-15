@@ -25,6 +25,12 @@ from transformers.models.wav2vec2.modeling_wav2vec2 import Wav2Vec2Model
 
 GENDER_MODEL_NAME = "audeering/wav2vec2-large-robust-24-ft-age-gender"
 GENDER_LABELS = ["female", "male", "child"]
+GENDER_LABEL_VI = {
+    "female": "nu",
+    "male": "nam",
+    "child": "tre_em",
+    "unknown": "unknown",
+}
 
 _device = None
 _diarization_pipeline = None
@@ -191,6 +197,13 @@ def _find_speaker(block_start, block_end, speaker_turns):
     return best_speaker
 
 
+def _short_text(text, limit=80):
+    clean = " ".join(str(text).split())
+    if len(clean) <= limit:
+        return clean
+    return clean[:limit - 3] + "..."
+
+
 def _extract_speaker_turns(diarization):
     """Lay danh sach turn tu output pyannote 3.x/4.x.
 
@@ -307,6 +320,12 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
             "text": sub.text, "speaker": speaker or "unknown",
             "gender": info["label"], "confidence": round(info["confidence"], 3),
         })
+        if progress_cb:
+            gender_vi = GENDER_LABEL_VI.get(info["label"], info["label"])
+            progress_cb(
+                f"Block {sub.index} -> {speaker or 'unknown'} | {gender_vi} "
+                f"| conf {info['confidence']:.3f} | {_short_text(sub.text)}"
+            )
 
     # Ghi ra file .tmp roi os.replace() (atomic) thay vi ghi thang vao gender.csv/
     # annotated.srt: neu session bi ngat dung luc dang ghi, out_dir se khong bao
