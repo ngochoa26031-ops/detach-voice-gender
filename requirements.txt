@@ -11,6 +11,7 @@ gradio
 pyannote.audio
 speechbrain
 transformers
+safetensors
 librosa
 pysrt
 soundfile

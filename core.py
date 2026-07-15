@@ -18,12 +18,10 @@ import pysrt
 import soundfile as sf
 import torch
 import torch.nn as nn
+from huggingface_hub import hf_hub_download
 from pyannote.audio import Pipeline
-from transformers import Wav2Vec2Processor
-from transformers.models.wav2vec2.modeling_wav2vec2 import (
-    Wav2Vec2Model,
-    Wav2Vec2PreTrainedModel,
-)
+from transformers import Wav2Vec2Config, Wav2Vec2Processor
+from transformers.models.wav2vec2.modeling_wav2vec2 import Wav2Vec2Model
 
 GENDER_MODEL_NAME = "audeering/wav2vec2-large-robust-24-ft-age-gender"
 GENDER_LABELS = ["female", "male", "child"]
@@ -48,19 +46,42 @@ class _ModelHead(nn.Module):
         return self.out_proj(x)
 
 
-class _AgeGenderModel(Wav2Vec2PreTrainedModel):
+class _AgeGenderModel(nn.Module):
+    """Plain nn.Module (KHONG subclass Wav2Vec2PreTrainedModel/goi .from_pretrained()
+    tren chinh class nay): ban transformers moi doi noi bo _finalize_model_loading()
+    (doi hoi thuoc tinh all_tied_weights_keys) khong tuong thich voi custom head nay,
+    crash ngay luc load. Tu tai checkpoint + load_state_dict() thu cong de khong dinh
+    lieu vao duong from_pretrained() dang gay loi, bat ke ban transformers nao sau nay."""
+
     def __init__(self, config):
-        super().__init__(config)
+        super().__init__()
         self.config = config
         self.wav2vec2 = Wav2Vec2Model(config)
         self.age = _ModelHead(config, 1)
         self.gender = _ModelHead(config, 3)  # female, male, child
-        self.init_weights()
 
     def forward(self, input_values):
         hidden_states = self.wav2vec2(input_values)[0]
         hidden_states = torch.mean(hidden_states, dim=1)
         return self.age(hidden_states), self.gender(hidden_states)
+
+    @classmethod
+    def load(cls, model_name, token=None):
+        config = Wav2Vec2Config.from_pretrained(model_name, token=token)
+        model = cls(config)
+        try:
+            ckpt_path = hf_hub_download(model_name, "model.safetensors", token=token)
+            from safetensors.torch import load_file
+            state_dict = load_file(ckpt_path)
+        except Exception:
+            ckpt_path = hf_hub_download(model_name, "pytorch_model.bin", token=token)
+            state_dict = torch.load(ckpt_path, map_location="cpu")
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing:
+            print(f"[!] Gender model thieu key khi load (bo qua): {missing}", flush=True)
+        if unexpected:
+            print(f"[!] Gender model co key thua khi load (bo qua): {unexpected}", flush=True)
+        return model
 
 
 def _with_retry(fn, *args, retries=5, base_delay=10, progress_cb=None, **kwargs):
@@ -132,7 +153,7 @@ def ensure_models(hf_token: str, progress_cb=None):
             token=hf_token or None, progress_cb=progress_cb,
         )
         _gender_model = _with_retry(
-            _AgeGenderModel.from_pretrained, GENDER_MODEL_NAME,
+            _AgeGenderModel.load, GENDER_MODEL_NAME,
             token=hf_token or None, progress_cb=progress_cb,
         ).to(_device).eval()
 
