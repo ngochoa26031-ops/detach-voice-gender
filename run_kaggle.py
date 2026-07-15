@@ -21,7 +21,7 @@ REPO_URL = "https://github.com/ngochoa26031-ops/detach-voice-gender.git"
 
 def run(cmd, **kwargs):
     print("[*]", " ".join(str(x) for x in cmd), flush=True)
-    subprocess.run(cmd, check=True, **kwargs)
+    subprocess.run(cmd, check=True, timeout=kwargs.pop("timeout", None), **kwargs)
 
 
 def _module_installed(name: str) -> bool:
@@ -148,8 +148,11 @@ def main():
     app_dir = code_root / "detach-voice-gender-src"
 
     # Moi lan chay deu lay code moi nhat tu GitHub, nen notebook co the giu nguyen.
+    print(f"[*] Xoa source cu neu co: {app_dir}", flush=True)
     subprocess.run(["rm", "-rf", str(app_dir)], check=False)
-    run(["git", "clone", "-q", REPO_URL, str(app_dir)])
+    print(f"[*] Dang clone source moi tu GitHub: {REPO_URL}", flush=True)
+    run(["git", "clone", "--depth", "1", REPO_URL, str(app_dir)], timeout=300)
+    print("[*] Clone source xong.", flush=True)
 
     install_requirements(app_dir)
     setup_rclone_from_secret()
