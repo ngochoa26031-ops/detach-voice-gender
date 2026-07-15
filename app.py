@@ -52,6 +52,7 @@ RCLONE_REMOTE = os.environ.get("GENDERSFX_RCLONE_REMOTE", "").strip()
 RCLONE_INPUT_REMOTE = os.environ.get("GENDERSFX_RCLONE_INPUT_REMOTE", "").strip()
 RCLONE_RESUME_REMOTE = os.environ.get("GENDERSFX_RCLONE_RESUME_REMOTE", "").strip()
 RCLONE_RATE_LIMIT_ARGS = ["--fast-list", "--tpslimit", "3", "--tpslimit-burst", "1"]
+RCLONE_INPUT_PULL_ARGS = RCLONE_RATE_LIMIT_ARGS + ["--ignore-existing"]
 
 EXIT_AFTER_DONE = os.environ.get("GENDERSFX_EXIT_AFTER_DONE", "0").strip().lower() in ("1", "true", "yes", "on")
 EXIT_AFTER_DONE_DELAY = max(0, int(os.environ.get("GENDERSFX_EXIT_AFTER_DONE_DELAY", "15")))
@@ -93,18 +94,26 @@ def _rclone_push_dir(local_dir, remote):
         print(f"[{ts}] [!] Day len Drive LOI ({local_dir}): {exc}", flush=True)
 
 
-def _rclone_pull_dir(remote, local_dir):
+def _rclone_pull_dir(remote, local_dir, skip_existing=False):
     if not remote or not _rclone_available():
         return
     ts = datetime.now().strftime("%H:%M:%S")
     try:
         os.makedirs(local_dir, exist_ok=True)
+        extra_args = RCLONE_INPUT_PULL_ARGS if skip_existing else RCLONE_RATE_LIMIT_ARGS
         result = subprocess.run(
-            ["rclone", "copy", "-q", remote, local_dir] + RCLONE_RATE_LIMIT_ARGS,
+            ["rclone", "copy", "-q", remote, local_dir] + extra_args,
             capture_output=True, text=True, timeout=1800,
         )
         if result.returncode == 0:
-            print(f"[{ts}] [*] Da keo tu Drive: {remote} -> {local_dir}", flush=True)
+            if skip_existing:
+                print(
+                    f"[{ts}] [*] Da dong bo Drive input: {remote} -> {local_dir} "
+                    f"(bo qua file da co san tren Kaggle)",
+                    flush=True,
+                )
+            else:
+                print(f"[{ts}] [*] Da keo tu Drive: {remote} -> {local_dir}", flush=True)
         elif "directory not found" in result.stderr.lower():
             # Binh thuong: episode nay chua tung backup len Drive truoc do,
             # khong phai loi that.
@@ -260,7 +269,7 @@ def run_ui(episode_choice, media_upload, srt_upload, progress=gr.Progress()):
 
 def refresh_input_list():
     if RCLONE_INPUT_REMOTE:
-        _rclone_pull_dir(RCLONE_INPUT_REMOTE, INPUT_DIR)
+        _rclone_pull_dir(RCLONE_INPUT_REMOTE, INPUT_DIR, skip_existing=True)
     return gr.update(choices=list_input_episodes())
 
 
@@ -374,7 +383,7 @@ def _autowatch_loop():
             # lien tuc trong khi worker con dang chay lau (vd diarization).
             now = time.time()
             if RCLONE_INPUT_REMOTE and now - last_input_pull >= AUTO_WATCH_INTERVAL:
-                _rclone_pull_dir(RCLONE_INPUT_REMOTE, INPUT_DIR)
+                _rclone_pull_dir(RCLONE_INPUT_REMOTE, INPUT_DIR, skip_existing=True)
                 last_input_pull = now
 
             for gpu_index in list(active.keys()):
