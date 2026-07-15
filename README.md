@@ -96,12 +96,26 @@ Mỗi episode có 1 thư mục `output/<tên_episode>/` chứa:
 | File | Vai trò |
 |------|---------|
 | `core.py` | Pipeline lõi: diarization + gender classification + resume cache + map vào SRT |
-| `app.py` | Gradio UI: input/output/resume folder, dropdown episode, upload, auto-watch, backup Drive |
+| `app.py` | Gradio UI: input/output/resume folder, dropdown episode, upload, auto-watch đa-GPU, backup Drive |
+| `process_worker.py` | Worker xử lý 1 episode/subprocess, dùng để auto-watch chạy song song nhiều episode trên nhiều GPU |
 | `run_kaggle.py` | Bootstrap Kaggle: clone code mới nhất, cài thư viện, đọc `HF_TOKEN`/rclone secret, chạy `app.py` |
 | `run_kaggle.ipynb` | Notebook Kaggle 1-cell, luôn gọi `run_kaggle.py` mới nhất |
 | `get_rclone_secret.bat` | Lấy chuỗi base64 rclone.conf để dán vào Kaggle Secret `RCLONE_CONF_B64` |
 | `requirements.txt` | Thư viện cần cho `app.py`/`core.py` |
 | `sample/` | Mẫu 30 phút đầu để test nhanh (chỉ giữ `.srt`, audio loại khỏi git) |
+
+## Xử lý song song nhiều GPU
+
+`app.py` tự phát hiện số GPU (`nvidia-smi`) khi khởi động. Auto-watch (quét
+`input/` tự động, không cần bấm nút) sẽ xử lý tối đa N episode cùng lúc (N =
+số GPU), mỗi episode 1 subprocess riêng (`process_worker.py`) gán cứng vào 1
+GPU qua `CUDA_VISIBLE_DEVICES` — giống Kaggle T4 x2 sẽ xử lý 2 episode song
+song thay vì tuần tự. Ép số worker cụ thể bằng biến `GENDERSFX_GPU_WORKERS`.
+Log của từng worker được tail và in ra console chính, tiền tố `[GPU0]`/`[GPU1]`.
+
+Lưu ý: xử lý song song chỉ áp dụng cho **nhiều episode khác nhau** — bản
+thân diarization của 1 file không tách nhỏ chạy song song trên nhiều GPU
+được (phải nhìn toàn bộ audio cùng lúc để biết ai nói khi nào xuyên suốt).
 
 ## Ghi chú
 

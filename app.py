@@ -8,11 +8,10 @@ Ca 3 thu muc input/output/resume nam chung duoi 1 thu muc cha (mac dinh
 "detach-voice-gender" trong /kaggle/working hoac cwd), giong cach to chuc cua
 keepsfx, de de quan ly va de backup len Google Drive qua rclone.
 """
-import glob
-import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
@@ -21,6 +20,8 @@ from pathlib import Path
 import gradio as gr
 
 from core import process_episode
+
+WORKER_SCRIPT = Path(__file__).resolve().parent / "process_worker.py"
 
 MEDIA_EXTS = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".ts",
               ".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus")
@@ -56,6 +57,22 @@ EXIT_AFTER_DONE = os.environ.get("GENDERSFX_EXIT_AFTER_DONE", "0").strip().lower
 EXIT_AFTER_DONE_DELAY = max(0, int(os.environ.get("GENDERSFX_EXIT_AFTER_DONE_DELAY", "15")))
 AUTO_WATCH = os.environ.get("GENDERSFX_AUTO_WATCH", "1") != "0"
 AUTO_WATCH_INTERVAL = int(os.environ.get("GENDERSFX_AUTO_WATCH_SEC", "20"))
+
+
+def detect_gpu_count():
+    """So GPU vat ly (vd Kaggle T4 x2 -> 2). Dung de chay song song nhieu
+    episode, moi episode 1 subprocess rieng gan cung 1 GPU."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, check=True,
+        )
+        return max(1, len([line for line in result.stdout.splitlines() if line.strip()]))
+    except Exception:
+        return 1
+
+
+GPU_WORKERS = int(os.environ.get("GENDERSFX_GPU_WORKERS", "") or detect_gpu_count())
 
 
 def _rclone_available():
@@ -138,6 +155,31 @@ def _episode_done(episode_name):
     return csv_path.is_file() and csv_path.stat().st_size > 0
 
 
+def _episode_lock_path(episode_name):
+    return Path(OUTPUT_DIR) / episode_name / ".lock"
+
+
+def _try_acquire_lock(episode_name):
+    """Lock file dung PHOI HOP giua auto-watch (chay subprocess rieng) va nut
+    bam tren UI (chay trong process chinh), tranh 2 ben cung xu ly 1 episode
+    cung luc (ghi de/hong ket qua nhau). open(mode='x') la atomic o he thong
+    file that (kho Google Drive that/dia local), du 2 tien trinh check gan
+    nhu cung luc van chi 1 ben tao file thanh cong."""
+    lock_path = _episode_lock_path(episode_name)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(lock_path, "x", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+        return lock_path
+    except FileExistsError:
+        return None
+
+
+def _release_lock(lock_path):
+    if lock_path:
+        lock_path.unlink(missing_ok=True)
+
+
 def _run_pipeline(media_path, srt_path, episode_name, progress=None):
     def report(msg):
         if progress:
@@ -192,7 +234,18 @@ def run_ui(episode_choice, media_upload, srt_upload, progress=gr.Progress()):
                     "ca file media va file srt."
                 )
 
-            csv_path, srt_out_path = _run_pipeline(media_path, srt_path, episode_name, progress)
+            # Phoi hop voi auto-watch (co the dang xu ly episode nay tren 1
+            # subprocess GPU khac) bang lock file, tranh 2 ben cung ghi 1 out_dir.
+            lock_path = _try_acquire_lock(episode_name)
+            if lock_path is None:
+                raise gr.Error(
+                    f"'{episode_name}' dang duoc auto-watch xu ly o mot worker khac, "
+                    f"doi no xong roi thu lai (xem log console de biet tien do)."
+                )
+            try:
+                csv_path, srt_out_path = _run_pipeline(media_path, srt_path, episode_name, progress)
+            finally:
+                _release_lock(lock_path)
             progress(1, desc="Xong!")
             if EXIT_AFTER_DONE:
                 _schedule_exit_after_done()
@@ -244,32 +297,109 @@ def clear_old_data():
     return gr.update(choices=[]), "Da xoa du lieu cu trong input/output/resume."
 
 
+def _dispatch_worker(pair, episode_name, gpu_index):
+    """Khoi dong 1 subprocess xu ly rieng 'episode_name', gan cung 1 GPU qua
+    CUDA_VISIBLE_DEVICES=gpu_index. Tra ve None neu episode dang bi khoa (vd
+    nguoi dung vua bam nut xu ly thu cong episode nay tren UI)."""
+    lock_path = _try_acquire_lock(episode_name)
+    if lock_path is None:
+        return None
+
+    if RCLONE_RESUME_REMOTE:
+        _rclone_pull_dir(f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}",
+                         os.path.join(RESUME_DIR, episode_name))
+
+    out_dir = Path(OUTPUT_DIR) / episode_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / "worker.log"
+    log_fh = open(log_path, "w", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
+
+    proc = subprocess.Popen(
+        [sys.executable, str(WORKER_SCRIPT), str(pair["media"]), str(pair["srt"]),
+         str(out_dir), RESUME_DIR, episode_name],
+        stdout=log_fh, stderr=subprocess.STDOUT, env=env,
+    )
+    print(f"[*] GPU {gpu_index}: khoi dong worker cho '{episode_name}' (log: {log_path})", flush=True)
+    return {
+        "proc": proc, "log_fh": log_fh, "log_path": log_path, "log_pos": 0,
+        "lock_path": lock_path, "out_dir": out_dir, "episode_name": episode_name,
+        "gpu_index": gpu_index,
+    }
+
+
+def _tail_new_lines(worker):
+    """In them nhung dong log MOI cua 1 worker ra console chinh (log cua worker
+    dang bi redirect vao file rieng nen khong tu hien o day)."""
+    try:
+        with open(worker["log_path"], "r", encoding="utf-8", errors="ignore") as f:
+            f.seek(worker["log_pos"])
+            new_text = f.read()
+            worker["log_pos"] = f.tell()
+    except OSError:
+        return
+    for line in new_text.splitlines():
+        if line.strip():
+            print(f"[GPU{worker['gpu_index']}] {line}", flush=True)
+
+
+def _finish_worker(worker):
+    _tail_new_lines(worker)
+    worker["log_fh"].close()
+    _release_lock(worker["lock_path"])
+    episode_name, out_dir, gpu_index = worker["episode_name"], worker["out_dir"], worker["gpu_index"]
+    if worker["proc"].returncode == 0:
+        if RCLONE_REMOTE:
+            _rclone_push_dir(str(out_dir), f"{RCLONE_REMOTE.rstrip('/')}/{episode_name}")
+        if RCLONE_RESUME_REMOTE:
+            _rclone_push_dir(os.path.join(RESUME_DIR, episode_name),
+                             f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}")
+        print(f"[*] GPU {gpu_index}: '{episode_name}' xu ly xong.", flush=True)
+    else:
+        print(f"[!] GPU {gpu_index}: '{episode_name}' xu ly LOI (xem {worker['log_path']}), "
+              f"se tu thu lai vong sau.", flush=True)
+
+
 def _autowatch_loop():
-    print(f"[*] Auto-watch dang bat: {INPUT_DIR} (moi {AUTO_WATCH_INTERVAL}s)", flush=True)
+    print(f"[*] Auto-watch dang bat: {INPUT_DIR} "
+          f"(toi da {GPU_WORKERS} episode song song tren {GPU_WORKERS} GPU)", flush=True)
+    active = {}  # gpu_index -> worker dict
     while True:
-        all_done_this_pass = True
         try:
             if RCLONE_INPUT_REMOTE:
                 _rclone_pull_dir(RCLONE_INPUT_REMOTE, INPUT_DIR)
-            for episode_name, pair in sorted(_find_episode_pairs(INPUT_DIR).items()):
-                if _episode_done(episode_name):
-                    continue
-                all_done_this_pass = False
-                print(f"[*] Auto-watch: '{episode_name}' chua co output -> tu dong xu ly...", flush=True)
-                with PROCESS_LOCK:
-                    try:
-                        _run_pipeline(pair["media"], pair["srt"], episode_name)
-                    except Exception:
-                        import traceback
-                        print(traceback.format_exc(), flush=True)
-                        print(f"[!] Auto-watch: '{episode_name}' xu ly LOI, se tu thu lai vong sau.", flush=True)
+
+            for gpu_index in list(active.keys()):
+                worker = active[gpu_index]
+                _tail_new_lines(worker)
+                if worker["proc"].poll() is not None:
+                    _finish_worker(worker)
+                    del active[gpu_index]
+
+            pending = [
+                (name, pair) for name, pair in sorted(_find_episode_pairs(INPUT_DIR).items())
+                if not _episode_done(name) and not _episode_lock_path(name).exists()
+            ]
+
+            for gpu_index in [i for i in range(GPU_WORKERS) if i not in active]:
+                if not pending:
+                    break
+                name, pair = pending.pop(0)
+                worker = _dispatch_worker(pair, name, gpu_index)
+                if worker:
+                    active[gpu_index] = worker
+
+            if not active and not pending:
+                _schedule_exit_after_done()
+                time.sleep(AUTO_WATCH_INTERVAL)
+            else:
+                time.sleep(3)  # dang co worker chay -> kiem tra/tail log thuong xuyen hon
         except Exception:
             import traceback
             print(traceback.format_exc(), flush=True)
-            all_done_this_pass = False
-        if all_done_this_pass:
-            _schedule_exit_after_done()
-        time.sleep(AUTO_WATCH_INTERVAL)
+            time.sleep(AUTO_WATCH_INTERVAL)
 
 
 def start_autowatch():
@@ -285,7 +415,9 @@ with gr.Blocks(title="detach-voice-gender") as demo:
         "diarization (pyannote) + phan loai gioi tinh bang giong noi (wav2vec2).\n\n"
         f"Thu muc lam viec: `{ROOT_DIR}` (gom `input/`, `output/`, `resume/`).\n"
         "Bo file media + srt (cung ten, khac duoi) vao `input/` roi bam 'Lam moi', "
-        "hoac upload truc tiep ben duoi."
+        "hoac upload truc tiep ben duoi.\n\n"
+        f"Phat hien **{GPU_WORKERS} GPU** - auto-watch se xu ly toi da "
+        f"{GPU_WORKERS} episode cung luc, moi episode 1 GPU rieng."
     )
     with gr.Row():
         with gr.Column():
