@@ -89,10 +89,12 @@ def _rclone_push_dir(local_dir, remote, label="Drive"):
         return
     ts = datetime.now().strftime("%H:%M:%S")
     try:
+        print(f"[{ts}] [*] Dang day {label} len Drive: {local_dir} -> {remote}", flush=True)
         subprocess.run(
             ["rclone", "copy", "-q", local_dir, remote] + RCLONE_RATE_LIMIT_ARGS,
             check=True, timeout=1800,
         )
+        ts = datetime.now().strftime("%H:%M:%S")
         print(f"[{ts}] [*] Da day {label} len Drive: {local_dir} -> {remote}", flush=True)
     except Exception as exc:
         print(f"[{ts}] [!] Day {label} len Drive LOI ({local_dir}): {exc}", flush=True)

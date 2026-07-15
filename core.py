@@ -371,6 +371,8 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
     txt_tmp = txt_path.with_suffix(".txt.tmp")
     _write_gender_ranges_txt(txt_tmp, results)
     os.replace(txt_tmp, txt_path)
+    if progress_cb:
+        progress_cb(f"Da ghi ket qua TXT: {txt_path}")
 
     annotated_srt_path = out_dir / "annotated.srt"
     srt_tmp = annotated_srt_path.with_suffix(".srt.tmp")
@@ -379,6 +381,10 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
             f.write(f"{r['index']}\n{r['start']} --> {r['end']}\n"
                     f"[{r['speaker']}|{r['gender']}] {r['text']}\n\n")
     os.replace(srt_tmp, annotated_srt_path)
+    if progress_cb:
+        progress_cb(f"Da ghi annotated SRT: {annotated_srt_path}")
 
     wav_path.unlink(missing_ok=True)
+    if progress_cb:
+        progress_cb("Da don file audio tam, episode local da xu ly xong.")
     return txt_path, annotated_srt_path
