@@ -191,6 +191,24 @@ def _find_speaker(block_start, block_end, speaker_turns):
     return best_speaker
 
 
+def _extract_speaker_turns(diarization):
+    """Lay danh sach turn tu output pyannote 3.x/4.x.
+
+    pyannote.audio 3.x tra ve Annotation co itertracks(). pyannote.audio 4.x
+    tra ve DiarizeOutput, Annotation nam trong speaker_diarization.
+    """
+    annotation = getattr(diarization, "speaker_diarization", diarization)
+    if not hasattr(annotation, "itertracks"):
+        raise TypeError(
+            "Khong doc duoc output diarization cua pyannote: thieu itertracks() "
+            "va speaker_diarization."
+        )
+    return [
+        (turn.start, turn.end, speaker)
+        for turn, _, speaker in annotation.itertracks(yield_label=True)
+    ]
+
+
 def _diarization_cache_path(resume_dir, episode_name):
     if not resume_dir:
         return None
@@ -251,10 +269,7 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
                 diarization = _diarization_pipeline(str(wav_path), hook=hook)
         except ImportError:
             diarization = _diarization_pipeline(str(wav_path))
-        speaker_turns = [
-            (turn.start, turn.end, speaker)
-            for turn, _, speaker in diarization.itertracks(yield_label=True)
-        ]
+        speaker_turns = _extract_speaker_turns(diarization)
         _save_diarization_cache(cache_path, speaker_turns)
 
     if progress_cb:
