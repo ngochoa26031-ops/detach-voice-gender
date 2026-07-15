@@ -80,7 +80,7 @@ def _rclone_available():
     return shutil.which("rclone") is not None
 
 
-def _rclone_push_dir(local_dir, remote):
+def _rclone_push_dir(local_dir, remote, label="Drive"):
     if not remote or not _rclone_available() or not os.path.isdir(local_dir):
         return
     ts = datetime.now().strftime("%H:%M:%S")
@@ -89,9 +89,9 @@ def _rclone_push_dir(local_dir, remote):
             ["rclone", "copy", "-q", local_dir, remote] + RCLONE_RATE_LIMIT_ARGS,
             check=True, timeout=1800,
         )
-        print(f"[{ts}] [*] Da day len Drive: {local_dir} -> {remote}", flush=True)
+        print(f"[{ts}] [*] Da day {label} len Drive: {local_dir} -> {remote}", flush=True)
     except Exception as exc:
-        print(f"[{ts}] [!] Day len Drive LOI ({local_dir}): {exc}", flush=True)
+        print(f"[{ts}] [!] Day {label} len Drive LOI ({local_dir}): {exc}", flush=True)
 
 
 def _rclone_pull_dir(remote, local_dir, skip_existing=False):
@@ -206,10 +206,11 @@ def _run_pipeline(media_path, srt_path, episode_name, progress=None):
     )
 
     if RCLONE_REMOTE:
-        _rclone_push_dir(str(out_dir), f"{RCLONE_REMOTE.rstrip('/')}/{episode_name}")
+        _rclone_push_dir(str(out_dir), f"{RCLONE_REMOTE.rstrip('/')}/{episode_name}", label="output")
     if RCLONE_RESUME_REMOTE:
         _rclone_push_dir(os.path.join(RESUME_DIR, episode_name),
-                         f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}")
+                         f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}",
+                         label="resume")
     return txt_path, srt_out_path
 
 
@@ -361,10 +362,11 @@ def _finish_worker(worker):
     episode_name, out_dir, gpu_index = worker["episode_name"], worker["out_dir"], worker["gpu_index"]
     if worker["proc"].returncode == 0:
         if RCLONE_REMOTE:
-            _rclone_push_dir(str(out_dir), f"{RCLONE_REMOTE.rstrip('/')}/{episode_name}")
+            _rclone_push_dir(str(out_dir), f"{RCLONE_REMOTE.rstrip('/')}/{episode_name}", label="output")
         if RCLONE_RESUME_REMOTE:
             _rclone_push_dir(os.path.join(RESUME_DIR, episode_name),
-                             f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}")
+                             f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}",
+                             label="resume")
         print(f"[*] GPU {gpu_index}: '{episode_name}' xu ly xong.", flush=True)
     else:
         print(f"[!] GPU {gpu_index}: '{episode_name}' xu ly LOI (xem {worker['log_path']}), "
