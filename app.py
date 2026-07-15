@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
+import pysrt
 
 from core import process_episode
 
@@ -60,6 +61,7 @@ EXIT_AFTER_DONE_DELAY = max(0, int(os.environ.get("GENDERSFX_EXIT_AFTER_DONE_DEL
 AUTO_WATCH = os.environ.get("GENDERSFX_AUTO_WATCH", "1") != "0"
 AUTO_WATCH_INTERVAL = int(os.environ.get("GENDERSFX_AUTO_WATCH_SEC", "20"))
 STALE_LOCK_SEC = int(os.environ.get("GENDERSFX_STALE_LOCK_SEC", "120"))
+MULTI_GPU_CHUNKS = os.environ.get("GENDERSFX_MULTI_GPU_CHUNKS", "1") != "0"
 
 
 def detect_gpu_count():
@@ -326,6 +328,197 @@ def _is_persistent_drive_path(path):
     return "/drive/MyDrive/" in normalized or normalized.endswith("/drive/MyDrive")
 
 
+def _sub_time_to_seconds(sub_time):
+    return (sub_time.hours * 3600 + sub_time.minutes * 60
+            + sub_time.seconds + sub_time.milliseconds / 1000)
+
+
+def _seconds_to_sub_time(seconds):
+    return pysrt.SubRipTime(milliseconds=max(0, int(round(seconds * 1000))))
+
+
+def _open_srt_fallback(path):
+    for enc in ("utf-8", "utf-8-sig", "utf-16", "cp1258", "latin-1"):
+        try:
+            return pysrt.open(str(path), encoding=enc)
+        except Exception:
+            pass
+    return pysrt.open(str(path))
+
+
+def _format_ranges(indices):
+    if not indices:
+        return ""
+    ordered = sorted(set(int(i) for i in indices))
+    ranges = []
+    start = prev = ordered[0]
+    for idx in ordered[1:]:
+        if idx == prev + 1:
+            prev = idx
+            continue
+        ranges.append(f"{start}-{prev}" if start != prev else str(start))
+        start = prev = idx
+    ranges.append(f"{start}-{prev}" if start != prev else str(start))
+    return ", ".join(ranges)
+
+
+def _parse_range_items(text):
+    indices = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, end = part.split("-", 1)
+            indices.extend(range(int(start), int(end) + 1))
+        else:
+            indices.append(int(part))
+    return indices
+
+
+def _read_gender_txt(path):
+    label_to_gender = {
+        "Nam": "male",
+        "Nữ": "female",
+        "Nu": "female",
+        "Trẻ em": "child",
+        "Tre em": "child",
+        "Không rõ": "unknown",
+        "Khong ro": "unknown",
+    }
+    result = {"male": [], "female": [], "child": [], "unknown": []}
+    if not Path(path).is_file():
+        return result
+    for line in Path(path).read_text(encoding="utf-8-sig").splitlines():
+        if ":" not in line:
+            continue
+        label, ranges = line.split(":", 1)
+        gender = label_to_gender.get(label.strip())
+        if gender:
+            result[gender].extend(_parse_range_items(ranges))
+    return result
+
+
+def _write_gender_txt(path, by_gender):
+    labels = [("male", "Nam"), ("female", "Nữ"), ("child", "Trẻ em"), ("unknown", "Không rõ")]
+    lines = []
+    for gender, label in labels:
+        values = by_gender.get(gender, [])
+        if values:
+            lines.append(f"{label}: {_format_ranges(values)}")
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+
+
+def _chunk_subtitles_by_count(srt_path, chunk_count):
+    subs = _open_srt_fallback(srt_path)
+    if chunk_count <= 1 or len(subs) <= 1:
+        return []
+
+    chunk_count = min(chunk_count, len(subs))
+    chunks = []
+    total = len(subs)
+    for idx in range(chunk_count):
+        start_i = round(idx * total / chunk_count)
+        end_i = round((idx + 1) * total / chunk_count)
+        part_subs = subs[start_i:end_i]
+        if not part_subs:
+            continue
+        chunks.append({
+            "start": _sub_time_to_seconds(part_subs[0].start),
+            "end": _sub_time_to_seconds(part_subs[-1].end),
+            "subs": part_subs,
+        })
+    return chunks
+
+
+def _write_rebased_srt(subs, chunk_start, srt_path):
+    rebased = pysrt.SubRipFile()
+    for sub in subs:
+        item = pysrt.SubRipItem(
+            index=sub.index,
+            start=_seconds_to_sub_time(_sub_time_to_seconds(sub.start) - chunk_start),
+            end=_seconds_to_sub_time(_sub_time_to_seconds(sub.end) - chunk_start),
+            text=sub.text,
+        )
+        rebased.append(item)
+    rebased.save(str(srt_path), encoding="utf-8")
+
+
+def _cut_media_chunk(media_path, chunk_start, chunk_end, chunk_media_path):
+    duration = max(0.1, chunk_end - chunk_start)
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-ss", f"{chunk_start:.3f}", "-t", f"{duration:.3f}",
+            "-i", str(media_path), "-ac", "1", "-ar", "16000", str(chunk_media_path),
+        ],
+        check=True, capture_output=True,
+    )
+
+
+def _prepare_episode_chunks(pair, episode_name):
+    chunk_count = max(1, GPU_WORKERS)
+    chunks = _chunk_subtitles_by_count(pair["srt"], chunk_count)
+    if len(chunks) <= 1:
+        return []
+
+    episode_out_dir = Path(OUTPUT_DIR) / episode_name
+    chunk_root = episode_out_dir / "_chunks"
+    shutil.rmtree(chunk_root, ignore_errors=True)
+    chunk_root.mkdir(parents=True, exist_ok=True)
+
+    prepared = []
+    print(
+        f"[*] '{episode_name}' chia thanh {len(chunks)} phan theo SRT "
+        f"de chay song song tren {GPU_WORKERS} GPU.",
+        flush=True,
+    )
+    for idx, chunk in enumerate(chunks, start=1):
+        chunk_name = f"{episode_name}__part{idx:03d}"
+        chunk_dir = chunk_root / f"part{idx:03d}"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        chunk_media = chunk_dir / f"{chunk_name}.wav"
+        chunk_srt = chunk_dir / f"{chunk_name}.srt"
+        _write_rebased_srt(chunk["subs"], chunk["start"], chunk_srt)
+        _cut_media_chunk(pair["media"], chunk["start"], chunk["end"], chunk_media)
+        prepared.append({
+            "name": chunk_name,
+            "media": chunk_media,
+            "srt": chunk_srt,
+            "out_dir": chunk_dir / "output",
+            "resume_dir": Path(RESUME_DIR) / episode_name / "_chunks",
+            "part": idx,
+            "total": len(chunks),
+        })
+    return prepared
+
+
+def _merge_chunk_outputs(episode_name, chunks, original_srt_path):
+    by_gender = {"male": [], "female": [], "child": [], "unknown": []}
+    for chunk in chunks:
+        chunk_gender = _read_gender_txt(Path(chunk["out_dir"]) / "gender.txt")
+        for gender, values in chunk_gender.items():
+            by_gender[gender].extend(values)
+
+    out_dir = Path(OUTPUT_DIR) / episode_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    final_txt = out_dir / "gender.txt"
+    _write_gender_txt(final_txt, by_gender)
+
+    gender_by_index = {}
+    for gender, values in by_gender.items():
+        for idx in values:
+            gender_by_index[int(idx)] = gender
+
+    final_srt = out_dir / "annotated.srt"
+    subs = _open_srt_fallback(original_srt_path)
+    with open(final_srt, "w", encoding="utf-8") as f:
+        for sub in subs:
+            gender = gender_by_index.get(sub.index, "unknown")
+            f.write(f"{sub.index}\n{sub.start} --> {sub.end}\n"
+                    f"[{gender}] {sub.text}\n\n")
+    return final_txt, final_srt
+
+
 def clear_old_data():
     if _is_persistent_drive_path(ROOT_DIR):
         # ROOT_DIR nam trong Google Drive that (khong phai dia tam Kaggle) - day
@@ -352,6 +545,28 @@ def clear_old_data():
     return gr.update(choices=[]), "Da xoa du lieu cu trong input/output/resume."
 
 
+def _start_worker(media_path, srt_path, out_dir, resume_dir, worker_name, gpu_index,
+                  lock_path=None, kind="episode", job_name=None, chunk=None):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / "worker.log"
+    log_fh = open(log_path, "w", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
+
+    proc = subprocess.Popen(
+        [sys.executable, str(WORKER_SCRIPT), str(media_path), str(srt_path),
+         str(out_dir), str(resume_dir), worker_name],
+        stdout=log_fh, stderr=subprocess.STDOUT, env=env,
+    )
+    print(f"[*] GPU {gpu_index}: khoi dong worker cho '{worker_name}' (log: {log_path})", flush=True)
+    return {
+        "proc": proc, "log_fh": log_fh, "log_path": log_path, "log_pos": 0,
+        "lock_path": lock_path, "out_dir": out_dir, "episode_name": worker_name,
+        "gpu_index": gpu_index, "kind": kind, "job_name": job_name, "chunk": chunk,
+    }
+
+
 def _dispatch_worker(pair, episode_name, gpu_index):
     """Khoi dong 1 subprocess xu ly rieng 'episode_name', gan cung 1 GPU qua
     CUDA_VISIBLE_DEVICES=gpu_index. Tra ve None neu episode dang bi khoa (vd
@@ -365,24 +580,69 @@ def _dispatch_worker(pair, episode_name, gpu_index):
                          os.path.join(RESUME_DIR, episode_name))
 
     out_dir = Path(OUTPUT_DIR) / episode_name
-    out_dir.mkdir(parents=True, exist_ok=True)
-    log_path = out_dir / "worker.log"
-    log_fh = open(log_path, "w", encoding="utf-8")
+    return _start_worker(pair["media"], pair["srt"], out_dir, RESUME_DIR,
+                         episode_name, gpu_index, lock_path=lock_path)
 
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
 
-    proc = subprocess.Popen(
-        [sys.executable, str(WORKER_SCRIPT), str(pair["media"]), str(pair["srt"]),
-         str(out_dir), RESUME_DIR, episode_name],
-        stdout=log_fh, stderr=subprocess.STDOUT, env=env,
+def _dispatch_chunk_worker(job, gpu_index):
+    chunk = job["pending"].pop(0)
+    worker = _start_worker(
+        chunk["media"], chunk["srt"], chunk["out_dir"], chunk["resume_dir"],
+        chunk["name"], gpu_index, kind="chunk", job_name=job["episode_name"],
+        chunk=chunk,
     )
-    print(f"[*] GPU {gpu_index}: khoi dong worker cho '{episode_name}' (log: {log_path})", flush=True)
-    return {
-        "proc": proc, "log_fh": log_fh, "log_path": log_path, "log_pos": 0,
-        "lock_path": lock_path, "out_dir": out_dir, "episode_name": episode_name,
-        "gpu_index": gpu_index,
-    }
+    print(
+        f"[*] GPU {gpu_index}: '{job['episode_name']}' chunk "
+        f"{chunk['part']}/{chunk['total']} dang xu ly.",
+        flush=True,
+    )
+    return worker
+
+
+def _start_chunk_job(episode_name, pair):
+    lock_path = _try_acquire_lock(episode_name)
+    if lock_path is None:
+        return None
+    try:
+        if RCLONE_RESUME_REMOTE:
+            _rclone_pull_dir(f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}",
+                             os.path.join(RESUME_DIR, episode_name))
+        chunks = _prepare_episode_chunks(pair, episode_name)
+        if not chunks:
+            _release_lock(lock_path)
+            return None
+        return {
+            "episode_name": episode_name,
+            "pair": pair,
+            "lock_path": lock_path,
+            "pending": chunks[:],
+            "done": [],
+            "failed": False,
+        }
+    except Exception:
+        _release_lock(lock_path)
+        raise
+
+
+def _finish_chunk_job(job):
+    episode_name = job["episode_name"]
+    try:
+        if job["failed"]:
+            print(f"[!] '{episode_name}' co chunk loi, se thu lai o vong sau.", flush=True)
+            return
+
+        txt_path, srt_path = _merge_chunk_outputs(episode_name, job["done"], job["pair"]["srt"])
+        print(f"[*] '{episode_name}' da gop {len(job['done'])} chunk -> {txt_path}", flush=True)
+        out_dir = Path(OUTPUT_DIR) / episode_name
+        if RCLONE_REMOTE:
+            _rclone_push_dir(str(out_dir), f"{RCLONE_REMOTE.rstrip('/')}/{episode_name}", label="output")
+        if RCLONE_RESUME_REMOTE:
+            _rclone_push_dir(os.path.join(RESUME_DIR, episode_name),
+                             f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}",
+                             label="resume")
+        print(f"[*] '{episode_name}' xu ly xong bang multi-GPU chunks: {txt_path} | {srt_path}", flush=True)
+    finally:
+        _release_lock(job["lock_path"])
 
 
 def _tail_new_lines(worker):
@@ -403,8 +663,22 @@ def _tail_new_lines(worker):
 def _finish_worker(worker):
     _tail_new_lines(worker)
     worker["log_fh"].close()
-    _release_lock(worker["lock_path"])
     episode_name, out_dir, gpu_index = worker["episode_name"], worker["out_dir"], worker["gpu_index"]
+    if worker.get("kind") == "chunk":
+        if worker["proc"].returncode == 0:
+            print(
+                f"[*] GPU {gpu_index}: chunk '{episode_name}' xu ly xong.",
+                flush=True,
+            )
+        else:
+            print(
+                f"[!] GPU {gpu_index}: chunk '{episode_name}' xu ly LOI "
+                f"(xem {worker['log_path']}).",
+                flush=True,
+            )
+        return
+
+    _release_lock(worker["lock_path"])
     if worker["proc"].returncode == 0:
         if RCLONE_REMOTE:
             _rclone_push_dir(str(out_dir), f"{RCLONE_REMOTE.rstrip('/')}/{episode_name}", label="output")
@@ -422,6 +696,7 @@ def _autowatch_loop():
     print(f"[*] Auto-watch dang bat: {INPUT_DIR} "
           f"(toi da {GPU_WORKERS} episode song song tren {GPU_WORKERS} GPU)", flush=True)
     active = {}  # gpu_index -> worker dict
+    chunk_jobs = {}
     last_input_pull = 0.0
     last_idle_log = 0.0
     while True:
@@ -438,8 +713,25 @@ def _autowatch_loop():
                 worker = active[gpu_index]
                 _tail_new_lines(worker)
                 if worker["proc"].poll() is not None:
+                    if worker.get("kind") == "chunk":
+                        job = chunk_jobs.get(worker.get("job_name"))
+                        if job is not None:
+                            if worker["proc"].returncode == 0:
+                                job["done"].append(worker["chunk"])
+                            else:
+                                job["failed"] = True
                     _finish_worker(worker)
                     del active[gpu_index]
+
+            for job_name in list(chunk_jobs.keys()):
+                job = chunk_jobs[job_name]
+                job_active = any(
+                    worker.get("job_name") == job_name
+                    for worker in active.values()
+                )
+                if (job["failed"] or (not job["pending"] and not job_active)):
+                    _finish_chunk_job(job)
+                    del chunk_jobs[job_name]
 
             pairs = sorted(_find_episode_pairs(INPUT_DIR).items())
             pending = []
@@ -455,15 +747,32 @@ def _autowatch_loop():
                     continue
                 pending.append((name, pair))
 
+            for job in list(chunk_jobs.values()):
+                for gpu_index in [i for i in range(GPU_WORKERS) if i not in active]:
+                    if not job["pending"] or job["failed"]:
+                        break
+                    active[gpu_index] = _dispatch_chunk_worker(job, gpu_index)
+
             for gpu_index in [i for i in range(GPU_WORKERS) if i not in active]:
-                if not pending:
+                if not pending or chunk_jobs:
                     break
                 name, pair = pending.pop(0)
+                if MULTI_GPU_CHUNKS and GPU_WORKERS > 1:
+                    job = _start_chunk_job(name, pair)
+                    if job:
+                        chunk_jobs[name] = job
+                        while job["pending"] and gpu_index not in active:
+                            active[gpu_index] = _dispatch_chunk_worker(job, gpu_index)
+                        for free_gpu in [i for i in range(GPU_WORKERS) if i not in active]:
+                            if not job["pending"]:
+                                break
+                            active[free_gpu] = _dispatch_chunk_worker(job, free_gpu)
+                        break
                 worker = _dispatch_worker(pair, name, gpu_index)
                 if worker:
                     active[gpu_index] = worker
 
-            if not active and not pending:
+            if not active and not pending and not chunk_jobs:
                 if pairs and now - last_idle_log >= 30:
                     print(
                         f"[*] Auto-watch: {len(pairs)} episode, "
