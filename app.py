@@ -72,17 +72,40 @@ MULTI_GPU_CHUNKS = os.environ.get("GENDERSFX_MULTI_GPU_CHUNKS", "1") != "0"
 def detect_gpu_count():
     """So GPU vat ly (vd Kaggle T4 x2 -> 2). Dung de chay song song nhieu
     episode, moi episode 1 subprocess rieng gan cung 1 GPU."""
+    counts = []
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
             capture_output=True, text=True, check=True,
         )
-        return max(1, len([line for line in result.stdout.splitlines() if line.strip()]))
-    except Exception:
-        return 1
+        names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if names:
+            counts.append(("nvidia-smi", len(names), ", ".join(names)))
+    except Exception as exc:
+        print(f"[!] Khong doc duoc GPU bang nvidia-smi: {exc}", flush=True)
+
+    try:
+        import torch
+        torch_count = torch.cuda.device_count()
+        if torch_count:
+            counts.append(("torch", torch_count, "torch.cuda.device_count()"))
+    except Exception as exc:
+        print(f"[!] Khong doc duoc GPU bang torch: {exc}", flush=True)
+
+    if counts:
+        source, count, detail = max(counts, key=lambda item: item[1])
+        print(f"[*] Phat hien {count} GPU bang {source}: {detail}", flush=True)
+        return max(1, count)
+
+    print("[!] Khong phat hien GPU ro rang, tam dung 1 worker.", flush=True)
+    return 1
 
 
-GPU_WORKERS = int(os.environ.get("GENDERSFX_GPU_WORKERS", "") or detect_gpu_count())
+if os.environ.get("GENDERSFX_GPU_WORKERS", "").strip():
+    GPU_WORKERS = int(os.environ["GENDERSFX_GPU_WORKERS"])
+    print(f"[*] Ep so GPU worker tu GENDERSFX_GPU_WORKERS={GPU_WORKERS}", flush=True)
+else:
+    GPU_WORKERS = detect_gpu_count()
 
 
 def _rclone_available():
