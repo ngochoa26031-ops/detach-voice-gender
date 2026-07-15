@@ -1,15 +1,17 @@
-"""Bootstrap chạy trên Kaggle: cài thư viện (chỉ nếu thiếu), đọc HF_TOKEN từ
-Kaggle Secret, rồi mở app Gradio. Notebook run_kaggle.ipynb luôn tải bản mới
-nhất của file này từ GitHub nên không cần sửa notebook mỗi khi code cập nhật.
+"""Bootstrap chay tren Kaggle: cai thu vien (chi neu thieu), doc HF_TOKEN tu
+Kaggle Secret, cau hinh rclone (tuy chon) de backup input/output/resume len
+Google Drive, roi mo app Gradio. Notebook run_kaggle.ipynb luon tai ban moi
+nhat cua file nay tu GitHub nen khong can sua notebook moi khi code cap nhat.
 """
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path("/kaggle/working")
-OUTPUT_DIR = ROOT / "gendersfx_output"
+RCLONE_CONF_PATH = Path.home() / ".config" / "rclone" / "rclone.conf"
 
 
 def run(cmd, **kwargs):
@@ -41,9 +43,34 @@ def load_hf_token():
         ) from exc
 
 
+def setup_rclone_from_secret():
+    """Tuy chon: neu co Kaggle Secret 'RCLONE_CONF_B64', cai rclone + nap config
+    de backup input/output/resume len Google Drive. Bo qua neu khong co secret nay
+    hoac khong bien GENDERSFX_RCLONE_*_REMOTE nao duoc dat."""
+    has_remote_env = any(
+        os.environ.get(k, "").strip()
+        for k in ("GENDERSFX_RCLONE_REMOTE", "GENDERSFX_RCLONE_INPUT_REMOTE",
+                   "GENDERSFX_RCLONE_RESUME_REMOTE")
+    )
+    if not has_remote_env:
+        return
+    if shutil.which("rclone") is None:
+        print("[*] Dang cai rclone de day file len Drive...", flush=True)
+        run(["bash", "-c", "curl -s https://rclone.org/install.sh | bash"])
+    try:
+        from kaggle_secrets import UserSecretsClient
+        import base64
+        conf_b64 = UserSecretsClient().get_secret("RCLONE_CONF_B64")
+        RCLONE_CONF_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RCLONE_CONF_PATH.write_bytes(base64.b64decode(conf_b64))
+        print("[*] Da nap rclone.conf tu Kaggle Secret.", flush=True)
+    except Exception as exc:
+        print(f"[!] Khong nap duoc rclone.conf tu Secret ({exc}). "
+              f"Se KHONG tu backup len Drive duoc.", flush=True)
+
+
 def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    app_dir = ROOT / "detach-voice-gender"
+    app_dir = ROOT / "detach-voice-gender-src"
 
     # Moi lan chay deu lay code moi nhat tu GitHub, nen notebook Kaggle co the giu nguyen.
     subprocess.run(["rm", "-rf", str(app_dir)], check=False)
@@ -51,14 +78,15 @@ def main():
          "https://github.com/ngochoa26031-ops/detach-voice-gender.git", str(app_dir)])
 
     install_requirements(app_dir)
+    setup_rclone_from_secret()
 
     os.environ["HF_TOKEN"] = load_hf_token()
-    os.environ["GENDERSFX_OUTPUT"] = str(OUTPUT_DIR)
+    os.environ["GENDERSFX_ROOT"] = str(ROOT / "detach-voice-gender")
     os.environ["GENDERSFX_SHARE"] = "1"
     os.environ["PYTHONUNBUFFERED"] = "1"
 
-    print(f"[*] Ket qua se luu tai: {OUTPUT_DIR}", flush=True)
-    print("[*] Dang mo Gradio app. Upload media + srt truc tiep tren web UI.", flush=True)
+    print(f"[*] Thu muc lam viec: {os.environ['GENDERSFX_ROOT']} (input/output/resume)", flush=True)
+    print("[*] Dang mo Gradio app...", flush=True)
 
     os.chdir(app_dir)
     run([sys.executable, "-u", "app.py"])

@@ -1,9 +1,13 @@
 """Pipeline lõi: diarization (ai nói khi nào) + gender classification (nam/nữ),
 map kết quả vào từng block SRT theo overlap thời gian. Không phụ thuộc Gradio/Kaggle
 để có thể test độc lập hoặc tái sử dụng từ app.py / run_kaggle.py.
+
+Có resume: kết quả diarization (bước tốn GPU/thời gian nhất) được lưu cache theo
+episode vào resume_dir; nếu bị ngắt giữa chừng, lần chạy sau dùng lại cache thay
+vì chạy lại diarization từ đầu.
 """
 import csv
-import os
+import json
 import subprocess
 from collections import defaultdict
 from pathlib import Path
@@ -113,10 +117,41 @@ def _find_speaker(block_start, block_end, speaker_turns):
     return best_speaker
 
 
-def process_episode(media_path, srt_path, out_dir, hf_token, progress_cb=None):
-    """Chạy toàn bộ pipeline cho 1 cặp media+srt, trả về (csv_path, annotated_srt_path)."""
+def _diarization_cache_path(resume_dir, episode_name):
+    if not resume_dir:
+        return None
+    return Path(resume_dir) / episode_name / "diarization.json"
+
+
+def _load_cached_diarization(cache_path):
+    if not cache_path or not cache_path.is_file():
+        return None
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        return [(t["start"], t["end"], t["speaker"]) for t in data]
+    except Exception:
+        return None
+
+
+def _save_diarization_cache(cache_path, speaker_turns):
+    if not cache_path:
+        return
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    data = [{"start": s, "end": e, "speaker": sp} for s, e, sp in speaker_turns]
+    cache_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
+                     episode_name=None, progress_cb=None):
+    """Chạy toàn bộ pipeline cho 1 cặp media+srt, trả về (csv_path, annotated_srt_path).
+
+    resume_dir: nếu truyền vào, kết quả diarization được cache theo episode_name
+    (mặc định = tên file media không đuôi) để lần chạy sau tái sử dụng nếu bị
+    ngắt giữa chừng (ví dụ mất session Kaggle) thay vì chạy lại từ đầu.
+    """
     media_path, srt_path, out_dir = Path(media_path), Path(srt_path), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    episode_name = episode_name or media_path.stem
 
     ensure_models(hf_token, progress_cb)
 
@@ -125,13 +160,20 @@ def process_episode(media_path, srt_path, out_dir, hf_token, progress_cb=None):
     wav_path = out_dir / "audio_16k.wav"
     _to_wav_16k_mono(media_path, wav_path)
 
-    if progress_cb:
-        progress_cb("Đang tách giọng theo từng speaker (diarization)...")
-    diarization = _diarization_pipeline(str(wav_path))
-    speaker_turns = [
-        (turn.start, turn.end, speaker)
-        for turn, _, speaker in diarization.itertracks(yield_label=True)
-    ]
+    cache_path = _diarization_cache_path(resume_dir, episode_name)
+    speaker_turns = _load_cached_diarization(cache_path)
+    if speaker_turns is not None:
+        if progress_cb:
+            progress_cb("Dùng lại kết quả diarization đã lưu (resume)...")
+    else:
+        if progress_cb:
+            progress_cb("Đang tách giọng theo từng speaker (diarization)...")
+        diarization = _diarization_pipeline(str(wav_path))
+        speaker_turns = [
+            (turn.start, turn.end, speaker)
+            for turn, _, speaker in diarization.itertracks(yield_label=True)
+        ]
+        _save_diarization_cache(cache_path, speaker_turns)
 
     if progress_cb:
         progress_cb(f"Đang phân loại giới tính cho {len(set(s for _, _, s in speaker_turns))} speaker...")
