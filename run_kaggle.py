@@ -19,9 +19,18 @@ def run(cmd, **kwargs):
     subprocess.run(cmd, check=True, **kwargs)
 
 
+def _module_installed(name: str) -> bool:
+    # find_spec("pyannote.audio") nem ModuleNotFoundError (thay vi tra ve None)
+    # neu package cha "pyannote" chua cai - phai bat exception, khong chi check gia tri.
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ModuleNotFoundError:
+        return False
+
+
 def install_requirements(app_dir: Path):
     need_mods = ["gradio", "pyannote.audio", "speechbrain", "transformers", "pysrt"]
-    if all(importlib.util.find_spec(m) for m in need_mods):
+    if all(_module_installed(m) for m in need_mods):
         print("[*] Thu vien Python da co, bo qua cai dat.", flush=True)
         return
     print("[*] Dang cai thu vien Python lan dau trong session nay...", flush=True)
