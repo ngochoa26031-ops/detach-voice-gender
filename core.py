@@ -264,18 +264,26 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
             "gender": info["label"], "confidence": round(info["confidence"], 3),
         })
 
+    # Ghi ra file .tmp roi os.replace() (atomic) thay vi ghi thang vao gender.csv/
+    # annotated.srt: neu session bi ngat dung luc dang ghi, out_dir se khong bao
+    # gio co 1 file gender.csv "do dang" nhung size > 0 - thu de bi _episode_done()
+    # (app.py) hieu nham la da xu ly xong roi bo qua vinh vien o session sau.
     csv_path = out_dir / "gender.csv"
-    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+    csv_tmp = csv_path.with_suffix(".csv.tmp")
+    with open(csv_tmp, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "index", "start", "end", "speaker", "gender", "confidence", "text"])
         writer.writeheader()
         writer.writerows(results)
+    os.replace(csv_tmp, csv_path)
 
     annotated_srt_path = out_dir / "annotated.srt"
-    with open(annotated_srt_path, "w", encoding="utf-8") as f:
+    srt_tmp = annotated_srt_path.with_suffix(".srt.tmp")
+    with open(srt_tmp, "w", encoding="utf-8") as f:
         for r in results:
             f.write(f"{r['index']}\n{r['start']} --> {r['end']}\n"
                     f"[{r['speaker']}|{r['gender']}] {r['text']}\n\n")
+    os.replace(srt_tmp, annotated_srt_path)
 
     wav_path.unlink(missing_ok=True)
     return csv_path, annotated_srt_path

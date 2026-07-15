@@ -33,12 +33,28 @@ def _module_installed(name: str) -> bool:
         return False
 
 
+def _pyannote_needs_downgrade() -> bool:
+    """Ban pyannote.audio >=4.0 doi cach nap pipeline speaker-diarization-3.1,
+    tu keo them model phu bi gate rieng (speaker-diarization-community-1) ->
+    403 ngay ca khi da accept license 3.1. Neu runtime cu da lo cai ban 4.x,
+    phai ep cai lai ban <4.0 thay vi chi kiem tra 'co module chua'."""
+    try:
+        from importlib.metadata import version
+        major = int(version("pyannote.audio").split(".")[0])
+        return major >= 4
+    except Exception:
+        return False
+
+
 def install_requirements(app_dir: Path):
     need_mods = ["gradio", "pyannote.audio", "speechbrain", "transformers", "pysrt"]
-    if all(_module_installed(m) for m in need_mods):
+    if all(_module_installed(m) for m in need_mods) and not _pyannote_needs_downgrade():
         print("[*] Thu vien Python da co, bo qua cai dat.", flush=True)
         return
-    print("[*] Dang cai thu vien Python lan dau trong session nay...", flush=True)
+    if _pyannote_needs_downgrade():
+        print("[*] pyannote.audio ban >=4.0 dang cai, ha cap ve <4.0 de tranh model gate phu...", flush=True)
+    else:
+        print("[*] Dang cai thu vien Python lan dau trong session nay...", flush=True)
     run([sys.executable, "-m", "pip", "install", "-q", "-r", str(app_dir / "requirements.txt")])
 
 
