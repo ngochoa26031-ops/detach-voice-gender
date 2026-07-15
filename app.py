@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -58,6 +59,7 @@ EXIT_AFTER_DONE = os.environ.get("GENDERSFX_EXIT_AFTER_DONE", "0").strip().lower
 EXIT_AFTER_DONE_DELAY = max(0, int(os.environ.get("GENDERSFX_EXIT_AFTER_DONE_DELAY", "15")))
 AUTO_WATCH = os.environ.get("GENDERSFX_AUTO_WATCH", "1") != "0"
 AUTO_WATCH_INTERVAL = int(os.environ.get("GENDERSFX_AUTO_WATCH_SEC", "20"))
+STALE_LOCK_SEC = int(os.environ.get("GENDERSFX_STALE_LOCK_SEC", "120"))
 
 
 def detect_gpu_count():
@@ -168,6 +170,47 @@ def _episode_lock_path(episode_name):
     return Path(OUTPUT_DIR) / episode_name / ".lock"
 
 
+def _pid_is_running(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _read_lock(lock_path):
+    try:
+        text = lock_path.read_text(encoding="utf-8").strip()
+        if not text:
+            return {}
+        if text.startswith("{"):
+            return json.loads(text)
+        return {"pid": int(text)}
+    except Exception:
+        return {}
+
+
+def _cleanup_stale_lock(episode_name):
+    lock_path = _episode_lock_path(episode_name)
+    if not lock_path.exists():
+        return False
+
+    info = _read_lock(lock_path)
+    pid = info.get("pid")
+    age = max(0, time.time() - lock_path.stat().st_mtime)
+    if pid and _pid_is_running(pid):
+        return False
+    if pid or age >= STALE_LOCK_SEC:
+        lock_path.unlink(missing_ok=True)
+        print(
+            f"[*] Bo lock cu cua '{episode_name}' "
+            f"(pid={pid or 'unknown'}, age={int(age)}s).",
+            flush=True,
+        )
+        return True
+    return False
+
+
 def _try_acquire_lock(episode_name):
     """Lock file dung PHOI HOP giua auto-watch (chay subprocess rieng) va nut
     bam tren UI (chay trong process chinh), tranh 2 ben cung xu ly 1 episode
@@ -178,9 +221,11 @@ def _try_acquire_lock(episode_name):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(lock_path, "x", encoding="utf-8") as f:
-            f.write(str(os.getpid()))
+            json.dump({"pid": os.getpid(), "time": time.time()}, f)
         return lock_path
     except FileExistsError:
+        if _cleanup_stale_lock(episode_name):
+            return _try_acquire_lock(episode_name)
         return None
 
 
@@ -378,6 +423,7 @@ def _autowatch_loop():
           f"(toi da {GPU_WORKERS} episode song song tren {GPU_WORKERS} GPU)", flush=True)
     active = {}  # gpu_index -> worker dict
     last_input_pull = 0.0
+    last_idle_log = 0.0
     while True:
         try:
             # Tick 3s de tail log worker cho muot, nhung chi keo Drive input moi
@@ -395,10 +441,19 @@ def _autowatch_loop():
                     _finish_worker(worker)
                     del active[gpu_index]
 
-            pending = [
-                (name, pair) for name, pair in sorted(_find_episode_pairs(INPUT_DIR).items())
-                if not _episode_done(name) and not _episode_lock_path(name).exists()
-            ]
+            pairs = sorted(_find_episode_pairs(INPUT_DIR).items())
+            pending = []
+            done_count = 0
+            locked = []
+            for name, pair in pairs:
+                if _episode_done(name):
+                    done_count += 1
+                    continue
+                _cleanup_stale_lock(name)
+                if _episode_lock_path(name).exists():
+                    locked.append(name)
+                    continue
+                pending.append((name, pair))
 
             for gpu_index in [i for i in range(GPU_WORKERS) if i not in active]:
                 if not pending:
@@ -409,6 +464,16 @@ def _autowatch_loop():
                     active[gpu_index] = worker
 
             if not active and not pending:
+                if pairs and now - last_idle_log >= 30:
+                    print(
+                        f"[*] Auto-watch: {len(pairs)} episode, "
+                        f"{done_count} da xong, {len(locked)} dang bi lock, "
+                        f"0 dang cho xu ly.",
+                        flush=True,
+                    )
+                    if locked:
+                        print(f"[*] Episode dang bi lock: {', '.join(locked)}", flush=True)
+                    last_idle_log = now
                 _schedule_exit_after_done()
                 time.sleep(AUTO_WATCH_INTERVAL)
             else:
