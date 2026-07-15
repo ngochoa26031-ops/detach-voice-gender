@@ -18,10 +18,15 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-import gradio as gr
 import pysrt
 
 from core import process_episode
+
+HEADLESS = os.environ.get("GENDERSFX_HEADLESS", "0").strip().lower() in ("1", "true", "yes", "on")
+if HEADLESS:
+    gr = None
+else:
+    import gradio as gr
 
 WORKER_SCRIPT = Path(__file__).resolve().parent / "process_worker.py"
 
@@ -292,11 +297,17 @@ def _run_pipeline(media_path, srt_path, episode_name, progress=None):
 PROCESS_LOCK = threading.Lock()
 
 
-def run_ui(episode_choice, media_upload, srt_upload, progress=gr.Progress()):
+def _raise_ui_error(message):
+    if gr is not None:
+        raise gr.Error(message)
+    raise RuntimeError(message)
+
+
+def run_ui(episode_choice, media_upload, srt_upload, progress=None):
     import traceback
     try:
         if not HF_TOKEN:
-            raise gr.Error(
+            _raise_ui_error(
                 "Thieu HF_TOKEN. Tren Kaggle: Add-ons -> Secrets -> them secret ten "
                 "HF_TOKEN (token HuggingFace, da accept license "
                 "pyannote/speaker-diarization-3.1 va pyannote/segmentation-3.0)."
@@ -309,12 +320,12 @@ def run_ui(episode_choice, media_upload, srt_upload, progress=gr.Progress()):
             elif episode_choice:
                 pairs = _find_episode_pairs(INPUT_DIR)
                 if episode_choice not in pairs:
-                    raise gr.Error(f"Khong tim thay cap file cho '{episode_choice}' trong {INPUT_DIR}")
+                    _raise_ui_error(f"Khong tim thay cap file cho '{episode_choice}' trong {INPUT_DIR}")
                 media_path = pairs[episode_choice]["media"]
                 srt_path = pairs[episode_choice]["srt"]
                 episode_name = episode_choice
             else:
-                raise gr.Error(
+                _raise_ui_error(
                     "Chon 1 episode tu danh sach input, hoac upload truc tiep "
                     "ca file media va file srt."
                 )
@@ -323,7 +334,7 @@ def run_ui(episode_choice, media_upload, srt_upload, progress=gr.Progress()):
             # subprocess GPU khac) bang lock file, tranh 2 ben cung ghi 1 out_dir.
             lock_path = _try_acquire_lock(episode_name)
             if lock_path is None:
-                raise gr.Error(
+                _raise_ui_error(
                     f"'{episode_name}' dang duoc auto-watch xu ly o mot worker khac, "
                     f"doi no xong roi thu lai (xem log console de biet tien do)."
                 )
@@ -335,9 +346,11 @@ def run_ui(episode_choice, media_upload, srt_upload, progress=gr.Progress()):
             if EXIT_AFTER_DONE:
                 _schedule_exit_after_done()
             return str(txt_path), str(srt_out_path), f"OK: da xu ly xong '{episode_name}'."
-    except gr.Error:
-        raise
     except Exception as exc:
+        if gr is not None and isinstance(exc, gr.Error):
+            raise
+        if gr is None:
+            raise
         tb = traceback.format_exc()
         print(tb, flush=True)
         return None, None, f"LOI:\n{exc}\n\n--- chi tiet ---\n{tb[-3000:]}"
@@ -346,6 +359,8 @@ def run_ui(episode_choice, media_upload, srt_upload, progress=gr.Progress()):
 def refresh_input_list():
     if RCLONE_INPUT_REMOTE:
         _rclone_pull_dir(RCLONE_INPUT_REMOTE, INPUT_DIR, skip_existing=True)
+    if gr is None:
+        return list_input_episodes()
     return gr.update(choices=list_input_episodes())
 
 
@@ -577,11 +592,15 @@ def clear_old_data():
                         pass
         msg = (f"Da xoa {len(removed)} file input da xu ly xong (con giu nguyen "
                f"output/resume vi day la Google Drive that, khong the phuc hoi neu xoa nham).")
+        if gr is None:
+            return list_input_episodes(), msg
         return gr.update(choices=list_input_episodes()), msg
 
     for d in (INPUT_DIR, OUTPUT_DIR, RESUME_DIR):
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d, exist_ok=True)
+    if gr is None:
+        return [], "Da xoa du lieu cu trong input/output/resume."
     return gr.update(choices=[]), "Da xoa du lieu cu trong input/output/resume."
 
 
@@ -839,39 +858,47 @@ def start_autowatch():
     threading.Thread(target=_autowatch_loop, daemon=True).start()
 
 
-with gr.Blocks(title="detach-voice-gender") as demo:
-    gr.Markdown(
-        "# detach-voice-gender\n"
-        "Xac dinh **tung block SRT** la giong **nam hay nu**, dua tren speaker "
-        "diarization (pyannote) + phan loai gioi tinh bang giong noi (wav2vec2).\n\n"
-        f"Thu muc lam viec: `{ROOT_DIR}` (gom `input/`, `output/`, `resume/`).\n"
-        "Bo file media + srt (cung ten, khac duoi) vao `input/` roi bam 'Lam moi', "
-        "hoac upload truc tiep ben duoi.\n\n"
-        f"Phat hien **{GPU_WORKERS} GPU** - auto-watch se xu ly toi da "
-        f"{GPU_WORKERS} episode cung luc, moi episode 1 GPU rieng."
-    )
-    with gr.Row():
-        with gr.Column():
-            episode_dd = gr.Dropdown(
-                choices=list_input_episodes(), value=None,
-                label=f"Chon episode da co san trong {INPUT_DIR}",
-            )
-            with gr.Row():
-                refresh_btn = gr.Button("Lam moi danh sach", size="sm")
-                clear_btn = gr.Button("Xoa data cu", size="sm", variant="secondary")
-            with gr.Row():
-                media_in = gr.File(label="... hoac Upload Video/Audio")
-                srt_in = gr.File(label="... hoac Upload file .srt")
-            btn = gr.Button("Xac dinh gioi tinh", variant="primary")
-        with gr.Column():
-            txt_out = gr.File(label="<ten_srt>_voiceblock.txt")
-            srt_out = gr.File(label="annotated.srt")
-            log = gr.Textbox(label="Log / Trang thai", lines=10)
+demo = None
+if not HEADLESS:
+    with gr.Blocks(title="detach-voice-gender") as demo:
+        gr.Markdown(
+            "# detach-voice-gender\n"
+            "Xac dinh **tung block SRT** la giong **nam hay nu**, dua tren speaker "
+            "diarization (pyannote) + phan loai gioi tinh bang giong noi (wav2vec2).\n\n"
+            f"Thu muc lam viec: `{ROOT_DIR}` (gom `input/`, `output/`, `resume/`).\n"
+            "Bo file media + srt (cung ten, khac duoi) vao `input/` roi bam 'Lam moi', "
+            "hoac upload truc tiep ben duoi.\n\n"
+            f"Phat hien **{GPU_WORKERS} GPU** - auto-watch se xu ly toi da "
+            f"{GPU_WORKERS} episode cung luc, moi episode 1 GPU rieng."
+        )
+        with gr.Row():
+            with gr.Column():
+                episode_dd = gr.Dropdown(
+                    choices=list_input_episodes(), value=None,
+                    label=f"Chon episode da co san trong {INPUT_DIR}",
+                )
+                with gr.Row():
+                    refresh_btn = gr.Button("Lam moi danh sach", size="sm")
+                    clear_btn = gr.Button("Xoa data cu", size="sm", variant="secondary")
+                with gr.Row():
+                    media_in = gr.File(label="... hoac Upload Video/Audio")
+                    srt_in = gr.File(label="... hoac Upload file .srt")
+                btn = gr.Button("Xac dinh gioi tinh", variant="primary")
+            with gr.Column():
+                txt_out = gr.File(label="<ten_srt>_voiceblock.txt")
+                srt_out = gr.File(label="annotated.srt")
+                log = gr.Textbox(label="Log / Trang thai", lines=10)
 
-    refresh_btn.click(refresh_input_list, outputs=[episode_dd])
-    clear_btn.click(clear_old_data, outputs=[episode_dd, log])
-    btn.click(run_ui, inputs=[episode_dd, media_in, srt_in], outputs=[txt_out, srt_out, log])
+        refresh_btn.click(refresh_input_list, outputs=[episode_dd])
+        clear_btn.click(clear_old_data, outputs=[episode_dd, log])
+        btn.click(run_ui, inputs=[episode_dd, media_in, srt_in], outputs=[txt_out, srt_out, log])
 
 if __name__ == "__main__":
-    start_autowatch()
-    demo.queue().launch(share=os.environ.get("GENDERSFX_SHARE", "1") == "1")
+    if HEADLESS:
+        if not HF_TOKEN:
+            raise RuntimeError("Thieu HF_TOKEN, khong the chay headless.")
+        print("[*] Headless mode: khong mo Gradio, chay auto-watch truc tiep trong notebook.", flush=True)
+        _autowatch_loop()
+    else:
+        start_autowatch()
+        demo.queue().launch(share=os.environ.get("GENDERSFX_SHARE", "1") == "1")

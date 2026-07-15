@@ -160,10 +160,14 @@ def main():
     os.environ["HF_TOKEN"] = load_hf_token()
     os.environ["GENDERSFX_ROOT"] = str(data_root)
     os.environ["GENDERSFX_SHARE"] = "1"
+    os.environ.setdefault("GENDERSFX_HEADLESS", "1")
     os.environ["PYTHONUNBUFFERED"] = "1"
 
     print(f"[*] Thu muc lam viec: {data_root} (input/output/resume)", flush=True)
-    print("[*] Dang mo Gradio app...", flush=True)
+    if os.environ.get("GENDERSFX_HEADLESS", "0") == "1":
+        print("[*] Dang chay headless, khong mo Gradio/web UI.", flush=True)
+    else:
+        print("[*] Dang mo Gradio app...", flush=True)
 
     os.chdir(app_dir)
     run([sys.executable, "-u", "app.py"])
