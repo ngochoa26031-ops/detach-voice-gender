@@ -8,6 +8,7 @@ vì chạy lại diarization từ đầu.
 """
 import csv
 import json
+import os
 import subprocess
 from collections import defaultdict
 from pathlib import Path
@@ -62,6 +63,30 @@ class _AgeGenderModel(Wav2Vec2PreTrainedModel):
         return self.age(hidden_states), self.gender(hidden_states)
 
 
+def _with_retry(fn, *args, retries=5, base_delay=10, progress_cb=None, **kwargs):
+    """HuggingFace hub hay tra ve 429 (rate limit) khi nhieu nguoi cung tai model
+    tu chung 1 dai IP (vd Kaggle). Thu lai voi backoff thay vi chet ngay."""
+    import time
+    from huggingface_hub.utils import HfHubHTTPError
+
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except HfHubHTTPError as exc:
+            last_exc = exc
+            is_429 = getattr(exc.response, "status_code", None) == 429
+            if not is_429 or attempt == retries:
+                raise
+            delay = base_delay * attempt
+            msg = f"HuggingFace tra ve 429 (rate limit), thu lai sau {delay}s ({attempt}/{retries})..."
+            if progress_cb:
+                progress_cb(msg)
+            print(f"[!] {msg}", flush=True)
+            time.sleep(delay)
+    raise last_exc
+
+
 def ensure_models(hf_token: str, progress_cb=None):
     """Tải/khởi tạo model 1 lần, dùng lại cho các lần gọi process_episode sau
     trong cùng session (HF hub cache còn giữ file trên đĩa qua các lần gọi)."""
@@ -70,18 +95,37 @@ def ensure_models(hf_token: str, progress_cb=None):
     if _device is None:
         _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    if hf_token:
+        # Dang nhap HF de MOI request (ke ca cua transformers, khong chi pyannote)
+        # deu duoc xac thuc bang token thay vi tinh la request an danh - request
+        # an danh de bi rate-limit 429 hon nhieu so voi request co token.
+        os.environ["HF_TOKEN"] = hf_token
+        os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
+        try:
+            from huggingface_hub import login
+            login(token=hf_token, add_to_git_credential=False)
+        except Exception as exc:
+            print(f"[!] huggingface_hub login loi (bo qua, van dung token qua env): {exc}", flush=True)
+
     if _diarization_pipeline is None:
         if progress_cb:
             progress_cb("Đang tải model diarization (pyannote)...")
-        _diarization_pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1", use_auth_token=hf_token,
+        _diarization_pipeline = _with_retry(
+            Pipeline.from_pretrained, "pyannote/speaker-diarization-3.1",
+            use_auth_token=hf_token, progress_cb=progress_cb,
         ).to(_device)
 
     if _gender_model is None:
         if progress_cb:
             progress_cb("Đang tải model phân loại giới tính (wav2vec2)...")
-        _processor = Wav2Vec2Processor.from_pretrained(GENDER_MODEL_NAME)
-        _gender_model = _AgeGenderModel.from_pretrained(GENDER_MODEL_NAME).to(_device).eval()
+        _processor = _with_retry(
+            Wav2Vec2Processor.from_pretrained, GENDER_MODEL_NAME,
+            token=hf_token or None, progress_cb=progress_cb,
+        )
+        _gender_model = _with_retry(
+            _AgeGenderModel.from_pretrained, GENDER_MODEL_NAME,
+            token=hf_token or None, progress_cb=progress_cb,
+        ).to(_device).eval()
 
     return _device
 
