@@ -211,7 +211,33 @@ def refresh_input_list():
     return gr.update(choices=list_input_episodes())
 
 
+def _is_persistent_drive_path(path):
+    """True neu path nam trong Google Drive that (Colab mount), khong phai dia
+    tam/ephemeral. Dung de CHAN xoa nham du lieu that su cua nguoi dung."""
+    normalized = os.path.normpath(os.path.abspath(path)).replace("\\", "/")
+    return "/drive/MyDrive/" in normalized or normalized.endswith("/drive/MyDrive")
+
+
 def clear_old_data():
+    if _is_persistent_drive_path(ROOT_DIR):
+        # ROOT_DIR nam trong Google Drive that (khong phai dia tam Kaggle) - day
+        # la du lieu that cua nguoi dung, TUYET DOI khong duoc rmtree. Chi don
+        # cac cap media+srt trong input/ ma output/ da xu ly xong (an toan xoa
+        # vi ket qua da co san trong output/), khong dung shutil.rmtree tren
+        # ca thu muc de tranh mot lenh xoa sach toan bo Drive cua ho.
+        removed = []
+        for episode_name, pair in _find_episode_pairs(INPUT_DIR).items():
+            if _episode_done(episode_name):
+                for p in (pair["media"], pair["srt"]):
+                    try:
+                        os.remove(p)
+                        removed.append(p.name)
+                    except OSError:
+                        pass
+        msg = (f"Da xoa {len(removed)} file input da xu ly xong (con giu nguyen "
+               f"output/resume vi day la Google Drive that, khong the phuc hoi neu xoa nham).")
+        return gr.update(choices=list_input_episodes()), msg
+
     for d in (INPUT_DIR, OUTPUT_DIR, RESUME_DIR):
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d, exist_ok=True)
