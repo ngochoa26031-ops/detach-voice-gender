@@ -84,6 +84,17 @@ def _rclone_available():
     return shutil.which("rclone") is not None
 
 
+def _snapshot_files(folder):
+    root = Path(folder)
+    if not root.is_dir():
+        return set()
+    return {
+        str(p.relative_to(root)).replace("\\", "/")
+        for p in root.rglob("*")
+        if p.is_file()
+    }
+
+
 def _rclone_push_dir(local_dir, remote, label="Drive"):
     if not remote or not _rclone_available() or not os.path.isdir(local_dir):
         return
@@ -106,18 +117,33 @@ def _rclone_pull_dir(remote, local_dir, skip_existing=False):
     ts = datetime.now().strftime("%H:%M:%S")
     try:
         os.makedirs(local_dir, exist_ok=True)
+        before_files = _snapshot_files(local_dir) if skip_existing else set()
         extra_args = RCLONE_INPUT_PULL_ARGS if skip_existing else RCLONE_RATE_LIMIT_ARGS
+        if skip_existing:
+            print(f"[{ts}] [*] Dang quet Drive input: {remote}", flush=True)
         result = subprocess.run(
             ["rclone", "copy", "-q", remote, local_dir] + extra_args,
             capture_output=True, text=True, timeout=1800,
         )
         if result.returncode == 0:
             if skip_existing:
-                print(
-                    f"[{ts}] [*] Da dong bo Drive input: {remote} -> {local_dir} "
-                    f"(bo qua file da co san tren Kaggle)",
-                    flush=True,
-                )
+                after_files = _snapshot_files(local_dir)
+                new_files = sorted(after_files - before_files)
+                ts = datetime.now().strftime("%H:%M:%S")
+                if new_files:
+                    preview = ", ".join(new_files[:6])
+                    more = f", +{len(new_files) - 6} file nua" if len(new_files) > 6 else ""
+                    print(
+                        f"[{ts}] [*] Quet Drive input thay {len(new_files)} file moi: "
+                        f"{preview}{more}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[{ts}] [*] Quet Drive input: khong thay file moi "
+                        f"(file da co tren Kaggle duoc bo qua).",
+                        flush=True,
+                    )
             else:
                 print(f"[{ts}] [*] Da keo tu Drive: {remote} -> {local_dir}", flush=True)
         elif "directory not found" in result.stderr.lower():
