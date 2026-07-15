@@ -366,10 +366,16 @@ def _autowatch_loop():
     print(f"[*] Auto-watch dang bat: {INPUT_DIR} "
           f"(toi da {GPU_WORKERS} episode song song tren {GPU_WORKERS} GPU)", flush=True)
     active = {}  # gpu_index -> worker dict
+    last_input_pull = 0.0
     while True:
         try:
-            if RCLONE_INPUT_REMOTE:
+            # Tick 3s de tail log worker cho muot, nhung chi keo Drive input moi
+            # AUTO_WATCH_INTERVAL - keo moi tick se spam log "Da keo tu Drive"
+            # lien tuc trong khi worker con dang chay lau (vd diarization).
+            now = time.time()
+            if RCLONE_INPUT_REMOTE and now - last_input_pull >= AUTO_WATCH_INTERVAL:
                 _rclone_pull_dir(RCLONE_INPUT_REMOTE, INPUT_DIR)
+                last_input_pull = now
 
             for gpu_index in list(active.keys()):
                 worker = active[gpu_index]

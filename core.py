@@ -242,7 +242,15 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
     else:
         if progress_cb:
             progress_cb("Đang tách giọng theo từng speaker (diarization)...")
-        diarization = _diarization_pipeline(str(wav_path))
+        # ProgressHook cua pyannote in tien do tung buoc (segmentation/embedding/
+        # clustering) trong luc chay - neu khong co hook, lenh nay chay lien 1
+        # mach khong in gi ca cho toi khi xong, de nham la bi treo voi file dai.
+        try:
+            from pyannote.audio.pipelines.utils.hook import ProgressHook
+            with ProgressHook() as hook:
+                diarization = _diarization_pipeline(str(wav_path), hook=hook)
+        except ImportError:
+            diarization = _diarization_pipeline(str(wav_path))
         speaker_turns = [
             (turn.start, turn.end, speaker)
             for turn, _, speaker in diarization.itertracks(yield_label=True)
