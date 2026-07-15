@@ -38,9 +38,14 @@ detach-voice-gender/
 1. Tạo notebook mới trên Kaggle (hoặc import [`run_kaggle.ipynb`](run_kaggle.ipynb)).
 2. **Add-ons → Secrets** → thêm secret tên `HF_TOKEN` (token HuggingFace,
    xem [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)).
-   Nhớ **accept license** cho `pyannote/speaker-diarization-3.1` và
-   `pyannote/segmentation-3.0` trên trang HuggingFace của 2 model đó.
-   *(Chỉ cần làm 1 lần cho mỗi tài khoản Kaggle.)*
+   Nhớ **accept license** (bấm "Agree and access repository") cho **cả 3 trang**:
+   - https://huggingface.co/pyannote/speaker-diarization-3.1
+   - https://huggingface.co/pyannote/segmentation-3.0
+   - https://huggingface.co/pyannote/speaker-diarization-community-1
+
+   (Thiếu cái thứ 3 vẫn bị lỗi 403 dù đã accept 2 cái đầu, vì pipeline mới
+   kéo thêm model phụ này ngầm bên trong.)
+   *(Chỉ cần làm 1 lần cho mỗi tài khoản HuggingFace.)*
 3. `Settings → Accelerator → GPU`, `Settings → Internet → On`.
 4. Bấm **Run**. Notebook tự clone code mới nhất, cài thư viện (chỉ lần đầu
    trong session), mở app **Gradio**.

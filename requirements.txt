@@ -3,12 +3,12 @@
 # khac CUDA version, lam mat GPU. Neu chay local, tu cai torch theo huong dan
 # rieng cua pytorch.org cho dung CUDA cua may ban truoc khi pip install -r nay.
 gradio
-# Ghim <4.0: ban 4.x doi cach nap pipeline speaker-diarization-3.1, tu keo them
-# mot model phu (pyannote/speaker-diarization-community-1) cung bi gate rieng,
-# de gay 403 moi lan HuggingFace ra model gate moi. Ban 3.x on dinh, chi can
-# accept license cho dung 2 repo pyannote/speaker-diarization-3.1 +
-# pyannote/segmentation-3.0 la du.
-pyannote.audio<4.0
+# KHONG ghim version pyannote.audio: ban moi tuong thich torchaudio moi ma
+# Kaggle/Colab cai san. Ghim ve <4.0 tung gay loi khac (torchaudio thieu
+# list_audio_backends/AudioMetaData vi API cu da bi go bo o torchaudio moi).
+# Loi 403 khi tai model la do CHUA accept du license tren HuggingFace, khong
+# phai do version - xem README muc "Accept license".
+pyannote.audio
 speechbrain
 transformers
 librosa

@@ -18,19 +18,6 @@ import pysrt
 import soundfile as sf
 import torch
 import torch.nn as nn
-import torchaudio
-
-if not hasattr(torchaudio, "AudioMetaData"):
-    # Ban torchaudio moi (vd tren Kaggle) bo `torchaudio.AudioMetaData`, nhung
-    # pyannote.audio<4.0 van dung no lam type-hint tra ve, danh gia ngay luc
-    # import module -> AttributeError crash truoc ca khi chay gi. Day chi la
-    # annotation (khong dung isinstance/gia tri that), nen 1 class rong the
-    # cho la du de import khong crash.
-    class _AudioMetaDataShim:
-        pass
-
-    torchaudio.AudioMetaData = _AudioMetaDataShim
-
 from pyannote.audio import Pipeline
 from transformers import Wav2Vec2Processor
 from transformers.models.wav2vec2.modeling_wav2vec2 import (
