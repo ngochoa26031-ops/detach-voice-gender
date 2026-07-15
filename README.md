@@ -23,7 +23,7 @@ Cả 3 thư mục nằm chung dưới **1 thư mục cha `detach-voice-gender`**
 ```
 detach-voice-gender/
 ├── input/     bỏ file media + srt (cùng tên, khác đuôi) vào đây
-├── output/    gender.txt + annotated.srt của từng episode
+├── output/    <tên_srt>_voiceblock.txt + annotated.srt của từng episode
 └── resume/    cache diarization để resume nếu bị ngắt giữa chừng
 ```
 
@@ -51,7 +51,7 @@ detach-voice-gender/
    trong session), mở app **Gradio**.
 5. Trong app: chọn episode từ danh sách (nếu đã bỏ file vào `input/`), hoặc
    **upload trực tiếp cặp file media+srt**, bấm **Xác định giới tính**, tải
-   `gender.txt` và `annotated.srt` ngay trên web khi xong.
+   `<tên_srt>_voiceblock.txt` và `annotated.srt` ngay trên web khi xong.
 
 ## (Tùy chọn) Backup lên Google Drive qua rclone
 
@@ -88,7 +88,7 @@ mặc định là `./detach-voice-gender/{input,output,resume}` trong thư mục
 ## Output
 
 Mỗi episode có 1 thư mục `output/<tên_episode>/` chứa:
-- `gender.txt` — danh sách range block theo giới tính, ví dụ:
+- `<tên_srt>_voiceblock.txt` — danh sách range block theo giới tính, ví dụ:
   `Nam: 1-33, 36-59` / `Nữ: 34-35, 60-61`
 - `annotated.srt` — srt gốc, thêm tiền tố `[speakerX|gender]` mỗi dòng thoại
 

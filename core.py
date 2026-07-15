@@ -240,6 +240,10 @@ def _write_gender_ranges_txt(txt_path, results):
     txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
 
 
+def _voiceblock_txt_path(out_dir, srt_path):
+    return Path(out_dir) / f"{Path(srt_path).stem}_voiceblock.txt"
+
+
 def _extract_speaker_turns(diarization):
     """Lay danh sach turn tu output pyannote 3.x/4.x.
 
@@ -363,11 +367,11 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
                 f"| conf {info['confidence']:.3f} | {_short_text(sub.text)}"
             )
 
-    # Ghi ra file .tmp roi os.replace() (atomic) thay vi ghi thang vao gender.txt/
+    # Ghi ra file .tmp roi os.replace() (atomic) thay vi ghi thang vao *_voiceblock.txt/
     # annotated.srt: neu session bi ngat dung luc dang ghi, out_dir se khong bao
-    # gio co 1 file gender.txt "do dang" nhung size > 0 - thu de bi _episode_done()
+    # gio co 1 file voiceblock "do dang" nhung size > 0 - thu de bi _episode_done()
     # (app.py) hieu nham la da xu ly xong roi bo qua vinh vien o session sau.
-    txt_path = out_dir / "gender.txt"
+    txt_path = _voiceblock_txt_path(out_dir, srt_path)
     txt_tmp = txt_path.with_suffix(".txt.tmp")
     _write_gender_ranges_txt(txt_tmp, results)
     os.replace(txt_tmp, txt_path)

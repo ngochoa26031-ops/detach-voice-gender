@@ -166,8 +166,8 @@ def list_input_episodes():
 
 
 def _episode_done(episode_name):
-    txt_path = Path(OUTPUT_DIR) / episode_name / "gender.txt"
-    return txt_path.is_file() and txt_path.stat().st_size > 0
+    out_dir = Path(OUTPUT_DIR) / episode_name
+    return any(p.is_file() and p.stat().st_size > 0 for p in out_dir.glob("*_voiceblock.txt"))
 
 
 def _episode_lock_path(episode_name):
@@ -411,6 +411,15 @@ def _write_gender_txt(path, by_gender):
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
 
 
+def _find_voiceblock_txt(out_dir):
+    files = sorted(Path(out_dir).glob("*_voiceblock.txt"))
+    return files[0] if files else None
+
+
+def _voiceblock_txt_path(out_dir, srt_path):
+    return Path(out_dir) / f"{Path(srt_path).stem}_voiceblock.txt"
+
+
 def _chunk_subtitles_by_count(srt_path, chunk_count):
     subs = _open_srt_fallback(srt_path)
     if chunk_count <= 1 or len(subs) <= 1:
@@ -497,13 +506,16 @@ def _prepare_episode_chunks(pair, episode_name):
 def _merge_chunk_outputs(episode_name, chunks, original_srt_path):
     by_gender = {"male": [], "female": [], "child": [], "unknown": []}
     for chunk in chunks:
-        chunk_gender = _read_gender_txt(Path(chunk["out_dir"]) / "gender.txt")
+        chunk_txt = _find_voiceblock_txt(chunk["out_dir"])
+        if chunk_txt is None:
+            continue
+        chunk_gender = _read_gender_txt(chunk_txt)
         for gender, values in chunk_gender.items():
             by_gender[gender].extend(values)
 
     out_dir = Path(OUTPUT_DIR) / episode_name
     out_dir.mkdir(parents=True, exist_ok=True)
-    final_txt = out_dir / "gender.txt"
+    final_txt = _voiceblock_txt_path(out_dir, original_srt_path)
     _write_gender_txt(final_txt, by_gender)
 
     gender_by_index = {}
@@ -826,7 +838,7 @@ with gr.Blocks(title="detach-voice-gender") as demo:
                 srt_in = gr.File(label="... hoac Upload file .srt")
             btn = gr.Button("Xac dinh gioi tinh", variant="primary")
         with gr.Column():
-            txt_out = gr.File(label="gender.txt")
+            txt_out = gr.File(label="<ten_srt>_voiceblock.txt")
             srt_out = gr.File(label="annotated.srt")
             log = gr.Textbox(label="Log / Trang thai", lines=10)
 
