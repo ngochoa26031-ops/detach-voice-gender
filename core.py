@@ -36,6 +36,9 @@ GENDER_TXT_LABELS = {
     "child": "Trẻ em",
     "unknown": "Không rõ",
 }
+GENDER_MAX_SEGMENTS_PER_SPEAKER = int(os.environ.get("GENDERSFX_MAX_GENDER_SEGMENTS", "24"))
+GENDER_MAX_SECONDS_PER_SPEAKER = float(os.environ.get("GENDERSFX_MAX_GENDER_SECONDS", "90"))
+GENDER_MIN_SEGMENT_SECONDS = float(os.environ.get("GENDERSFX_MIN_GENDER_SEGMENT_SECONDS", "0.6"))
 
 _device = None
 _diarization_pipeline = None
@@ -188,6 +191,34 @@ def _classify_gender(audio_segment, sr):
     return probs  # [female, male, child]
 
 
+def _sample_turns_for_gender(speaker_turns):
+    """Chon mau turn dai/ro nhat cho tung speaker.
+
+    Diarization cua file dai co the tao hang nghin turn nho. Phan loai gender
+    tren tat ca turn lam buoc nay cham kinh khung, trong khi chi can mot mau
+    du lon cho moi speaker la du on dinh.
+    """
+    grouped = defaultdict(list)
+    for start, end, speaker in speaker_turns:
+        duration = max(0.0, end - start)
+        if duration >= GENDER_MIN_SEGMENT_SECONDS:
+            grouped[speaker].append((duration, start, end, speaker))
+
+    sampled = {}
+    for speaker, turns in grouped.items():
+        chosen = []
+        total_seconds = 0.0
+        for duration, start, end, _ in sorted(turns, reverse=True):
+            if len(chosen) >= GENDER_MAX_SEGMENTS_PER_SPEAKER:
+                break
+            if total_seconds >= GENDER_MAX_SECONDS_PER_SPEAKER:
+                break
+            chosen.append((start, end, speaker))
+            total_seconds += duration
+        sampled[speaker] = sorted(chosen)
+    return sampled
+
+
 def _sub_to_seconds(sub_time):
     return (sub_time.hours * 3600 + sub_time.minutes * 60
             + sub_time.seconds + sub_time.milliseconds / 1000)
@@ -325,18 +356,31 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
         speaker_turns = _extract_speaker_turns(diarization)
         _save_diarization_cache(cache_path, speaker_turns)
 
+    sampled_turns = _sample_turns_for_gender(speaker_turns)
+    speaker_names = sorted(sampled_turns)
+    total_samples = sum(len(turns) for turns in sampled_turns.values())
     if progress_cb:
-        progress_cb(f"Đang phân loại giới tính cho {len(set(s for _, _, s in speaker_turns))} speaker...")
+        progress_cb(
+            f"Đang phân loại giới tính cho {len(speaker_names)} speaker "
+            f"({total_samples} đoạn mẫu, tối đa {GENDER_MAX_SEGMENTS_PER_SPEAKER}/speaker)..."
+        )
     full_audio, sr = sf.read(str(wav_path))
     if full_audio.ndim > 1:
         full_audio = full_audio.mean(axis=1)
 
     speaker_probs = defaultdict(list)
-    for start, end, speaker in speaker_turns:
-        seg = full_audio[int(start * sr):int(end * sr)]
-        probs = _classify_gender(seg, sr)
-        if probs is not None:
-            speaker_probs[speaker].append(probs)
+    for speaker_idx, speaker in enumerate(speaker_names, start=1):
+        turns = sampled_turns[speaker]
+        if progress_cb:
+            progress_cb(
+                f"Phân loại {speaker} ({speaker_idx}/{len(speaker_names)}), "
+                f"{len(turns)} đoạn mẫu..."
+            )
+        for start, end, _ in turns:
+            seg = full_audio[int(start * sr):int(end * sr)]
+            probs = _classify_gender(seg, sr)
+            if probs is not None:
+                speaker_probs[speaker].append(probs)
 
     speaker_gender = {}
     for speaker, probs_list in speaker_probs.items():
