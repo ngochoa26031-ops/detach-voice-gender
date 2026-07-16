@@ -68,12 +68,12 @@ STALE_LOCK_SEC = int(os.environ.get("GENDERSFX_STALE_LOCK_SEC", "120"))
 MULTI_GPU_CHUNKS = os.environ.get("GENDERSFX_MULTI_GPU_CHUNKS", "1") != "0"
 SPEAKER_MATCH_THRESHOLD = float(os.environ.get("GENDERSFX_SPEAKER_MATCH_THRESHOLD", "0.86"))
 APP_RUN_ID = uuid.uuid4().hex
+print("[*] app.py khoi dong, dang chuan bi auto-watch...", flush=True)
 
 
 def detect_gpu_count():
     """So GPU vat ly (vd Kaggle T4 x2 -> 2). Dung de chay song song nhieu
     episode, moi episode 1 subprocess rieng gan cung 1 GPU."""
-    counts = []
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
@@ -81,24 +81,12 @@ def detect_gpu_count():
         )
         names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
         if names:
-            counts.append(("nvidia-smi", len(names), ", ".join(names)))
+            print(f"[*] Phat hien {len(names)} GPU bang nvidia-smi: {', '.join(names)}", flush=True)
+            return max(1, len(names))
     except Exception as exc:
         print(f"[!] Khong doc duoc GPU bang nvidia-smi: {exc}", flush=True)
 
-    try:
-        import torch
-        torch_count = torch.cuda.device_count()
-        if torch_count:
-            counts.append(("torch", torch_count, "torch.cuda.device_count()"))
-    except Exception as exc:
-        print(f"[!] Khong doc duoc GPU bang torch: {exc}", flush=True)
-
-    if counts:
-        source, count, detail = max(counts, key=lambda item: item[1])
-        print(f"[*] Phat hien {count} GPU bang {source}: {detail}", flush=True)
-        return max(1, count)
-
-    print("[!] Khong phat hien GPU ro rang, tam dung 1 worker.", flush=True)
+    print("[!] Khong phat hien GPU bang nvidia-smi, tam dung 1 worker.", flush=True)
     return 1
 
 

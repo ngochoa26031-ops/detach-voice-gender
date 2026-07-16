@@ -30,6 +30,15 @@ def run(cmd, **kwargs):
     print(f"[{_ts()}] [*] Lenh xong:", " ".join(str(x) for x in cmd), flush=True)
 
 
+def run_foreground(cmd, **kwargs):
+    print(f"[{_ts()}] [*]", " ".join(str(x) for x in cmd), flush=True)
+    try:
+        subprocess.run(cmd, check=True, timeout=kwargs.pop("timeout", None), **kwargs)
+    except subprocess.CalledProcessError as exc:
+        print(f"[{_ts()}] [!] Lenh loi code {exc.returncode}: {' '.join(str(x) for x in cmd)}", flush=True)
+        raise
+
+
 def _module_installed(name: str) -> bool:
     # find_spec("pyannote.audio") nem ModuleNotFoundError (thay vi tra ve None)
     # neu package cha "pyannote" chua cai - phai bat exception, khong chi check gia tri.
@@ -178,7 +187,7 @@ def main():
         print("[*] Dang mo Gradio app...", flush=True)
 
     os.chdir(app_dir)
-    run([sys.executable, "-u", "app.py"])
+    run_foreground([sys.executable, "-u", "app.py"])
 
 
 if __name__ == "__main__":
