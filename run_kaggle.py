@@ -11,6 +11,7 @@ trong MyDrive/detach-voice-gender nen khong bao gio mat.
 import importlib.util
 import os
 import runpy
+import signal
 import shutil
 import subprocess
 import sys
@@ -48,6 +49,54 @@ def run_app_in_current_process(app_path: Path):
         runpy.run_path(str(app_path), run_name="__main__")
     finally:
         sys.argv = old_argv
+
+
+def cleanup_old_tool_processes():
+    """Stop/Run All tren Kaggle co the de sot worker subprocess cu.
+
+    Khong kill python rong rai de tranh dung vao ipykernel; chi kill process co
+    command line ro rang thuoc tool nay.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,args="],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+    except Exception as exc:
+        print(f"[!] Khong quet duoc process cu (bo qua): {exc}", flush=True)
+        return
+
+    current_pid = os.getpid()
+    targets = []
+    markers = (
+        "detach-voice-gender-src/app.py",
+        "detach-voice-gender-src/process_worker.py",
+        "detach_voice_gender_loader/run_kaggle.py",
+    )
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid_text, _, args = line.partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid == current_pid:
+            continue
+        if any(marker in args for marker in markers):
+            targets.append((pid, args))
+
+    if not targets:
+        return
+
+    print(f"[*] Don {len(targets)} process cu cua tool truoc khi chay lai...", flush=True)
+    for pid, args in targets:
+        try:
+            print(f"[*] Stop process cu pid={pid}: {args[:180]}", flush=True)
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
 
 
 def _module_installed(name: str) -> bool:
@@ -173,6 +222,7 @@ def main():
     code_root, data_root = detect_platform_dirs()
     code_root.mkdir(parents=True, exist_ok=True)
     os.chdir(code_root)
+    cleanup_old_tool_processes()
     app_dir = code_root / "detach-voice-gender-src"
 
     # Moi lan chay deu lay code moi nhat tu GitHub, nen notebook co the giu nguyen.
