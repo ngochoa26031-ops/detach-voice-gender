@@ -27,11 +27,6 @@
       "file": "VOICE_005_NAM_NGAN_CAM_THAN_SEED__ENROLL.wav"
     },
     {
-      "name": "VOICE_006_NU_PHAN_UNG_SEED",
-      "gender": "female",
-      "file": "VOICE_006_NU_PHAN_UNG_SEED__ENROLL.wav"
-    },
-    {
       "name": "VOICE_101_NAM_MONG_TEST",
       "gender": "male",
       "file": "VOICE_101_NAM_MONG_TEST__ENROLL.wav"
