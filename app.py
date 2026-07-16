@@ -193,6 +193,14 @@ def _find_episode_pairs(folder):
             continue
         if p.suffix.lower() == ".srt":
             srt_files[p.stem] = p
+            # Chap nhan kieu ten hay gap khi export: "episode.mp3.srt" di
+            # voi media "episode.mp3" (Path.stem cua SRT se la "episode.mp3",
+            # con Path.stem cua MP3 la "episode").
+            lower_stem = p.stem.lower()
+            for ext in MEDIA_EXTS:
+                if lower_stem.endswith(ext):
+                    srt_files[p.stem[:-len(ext)]] = p
+                    break
         elif p.suffix.lower() in MEDIA_EXTS:
             media_files[p.stem] = p
     return {
