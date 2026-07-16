@@ -405,6 +405,55 @@ def _save_diarization_cache(cache_path, speaker_turns):
     cache_path.write_text(json.dumps(data), encoding="utf-8")
 
 
+def _gender_cache_path(resume_dir, episode_name):
+    if not resume_dir:
+        return None
+    return Path(resume_dir) / episode_name / "gender_profiles.json"
+
+
+def _load_cached_gender_profiles(cache_path):
+    if not cache_path or not cache_path.is_file():
+        return {}
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    profiles = {}
+    for speaker, profile in data.items():
+        if not isinstance(profile, dict):
+            continue
+        label = profile.get("label")
+        if label not in GENDER_LABELS:
+            continue
+        profiles[speaker] = {
+            "label": label,
+            "confidence": float(profile.get("confidence", 0.0)),
+            "embedding": profile.get("embedding"),
+            "samples": int(profile.get("samples", 0)),
+        }
+    return profiles
+
+
+def _save_gender_profiles_cache(cache_path, profiles):
+    if not cache_path:
+        return
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    data = {}
+    for speaker, profile in profiles.items():
+        data[speaker] = {
+            "label": profile["label"],
+            "confidence": round(float(profile.get("confidence", 0.0)), 6),
+            "embedding": profile.get("embedding"),
+            "samples": int(profile.get("samples", 0)),
+        }
+    tmp_path = cache_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(tmp_path, cache_path)
+
+
 def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
                      episode_name=None, progress_cb=None):
     """Chạy toàn bộ pipeline cho 1 cặp media+srt, trả về (txt_path, annotated_srt_path).
@@ -447,47 +496,58 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
     sampled_turns = _sample_turns_for_gender(speaker_turns)
     speaker_names = sorted(sampled_turns)
     total_samples = sum(len(turns) for turns in sampled_turns.values())
+    gender_cache_path = _gender_cache_path(resume_dir, episode_name)
+    speaker_gender = _load_cached_gender_profiles(gender_cache_path)
+    missing_speakers = [speaker for speaker in speaker_names if speaker not in speaker_gender]
     if progress_cb:
+        cached_count = len(speaker_names) - len(missing_speakers)
         progress_cb(
             f"Đang phân loại giới tính cho {len(speaker_names)} speaker "
-            f"({total_samples} đoạn mẫu, tối đa {GENDER_MAX_SEGMENTS_PER_SPEAKER}/speaker)..."
+            f"({total_samples} đoạn mẫu, tối đa {GENDER_MAX_SEGMENTS_PER_SPEAKER}/speaker, "
+            f"resume {cached_count}/{len(speaker_names)})..."
         )
-    full_audio, sr = sf.read(str(wav_path))
-    if full_audio.ndim > 1:
-        full_audio = full_audio.mean(axis=1)
+    if missing_speakers:
+        full_audio, sr = sf.read(str(wav_path))
+        if full_audio.ndim > 1:
+            full_audio = full_audio.mean(axis=1)
 
-    speaker_probs = defaultdict(list)
-    speaker_embeddings = defaultdict(list)
-    for speaker_idx, speaker in enumerate(speaker_names, start=1):
-        turns = sampled_turns[speaker]
-        if progress_cb:
-            progress_cb(
-                f"Phân loại {speaker} ({speaker_idx}/{len(speaker_names)}), "
-                f"{len(turns)} đoạn mẫu..."
-            )
-        for start, end, _ in turns:
-            seg = full_audio[int(start * sr):int(end * sr)]
-            probs, embedding = _classify_gender_with_embedding(seg, sr)
-            if probs is not None:
-                speaker_probs[speaker].append(probs)
-            if embedding is not None:
-                speaker_embeddings[speaker].append(embedding)
+        for speaker_idx, speaker in enumerate(speaker_names, start=1):
+            if speaker not in missing_speakers:
+                continue
+            turns = sampled_turns[speaker]
+            if progress_cb:
+                progress_cb(
+                    f"Phân loại {speaker} ({speaker_idx}/{len(speaker_names)}), "
+                    f"{len(turns)} đoạn mẫu..."
+                )
+            probs_list = []
+            embeddings = []
+            for start, end, _ in turns:
+                seg = full_audio[int(start * sr):int(end * sr)]
+                probs, embedding = _classify_gender_with_embedding(seg, sr)
+                if probs is not None:
+                    probs_list.append(probs)
+                if embedding is not None:
+                    embeddings.append(embedding)
+            if not probs_list:
+                continue
 
-    speaker_gender = {}
-    for speaker, probs_list in speaker_probs.items():
-        avg = np.mean(probs_list, axis=0)
-        emb = None
-        if speaker_embeddings.get(speaker):
-            emb = np.mean(speaker_embeddings[speaker], axis=0)
-            norm = float(np.linalg.norm(emb))
-            if norm > 0:
-                emb = emb / norm
-        speaker_gender[speaker] = {
-            "label": GENDER_LABELS[int(np.argmax(avg))],
-            "confidence": float(avg.max()),
-            "embedding": emb.tolist() if emb is not None else None,
-            "samples": len(probs_list),
-        }
+            avg = np.mean(probs_list, axis=0)
+            emb = None
+            if embeddings:
+                emb = np.mean(embeddings, axis=0)
+                norm = float(np.linalg.norm(emb))
+                if norm > 0:
+                    emb = emb / norm
+            speaker_gender[speaker] = {
+                "label": GENDER_LABELS[int(np.argmax(avg))],
+                "confidence": float(avg.max()),
+                "embedding": emb.tolist() if emb is not None else None,
+                "samples": len(probs_list),
+            }
+            _save_gender_profiles_cache(gender_cache_path, speaker_gender)
+    elif progress_cb:
+        progress_cb("Dùng lại toàn bộ gender profiles đã lưu (resume).")
 
     if progress_cb:
         progress_cb("Đang gán nhãn từng block SRT...")
