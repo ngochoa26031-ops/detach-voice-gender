@@ -4,5 +4,6 @@ sample/*.wav
 *.mp3
 *.mp4
 *.wav
+!voice_dna/*.wav
 __pycache__/
 *.pyc

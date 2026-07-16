@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "name": "VOICE_001_NU_CHINH_SEED",
+      "gender": "female",
+      "file": "VOICE_001_NU_CHINH_SEED__ENROLL.wav"
+    },
+    {
+      "name": "VOICE_002_NU_PHU_SEED",
+      "gender": "female",
+      "file": "VOICE_002_NU_PHU_SEED__ENROLL.wav"
+    },
+    {
+      "name": "VOICE_003_NU_NGAN_CAM_THAN_SEED",
+      "gender": "female",
+      "file": "VOICE_003_NU_NGAN_CAM_THAN_SEED__ENROLL.wav"
+    },
+    {
+      "name": "VOICE_004_NAM_CHINH_SEED",
+      "gender": "male",
+      "file": "VOICE_004_NAM_CHINH_SEED__ENROLL.wav"
+    },
+    {
+      "name": "VOICE_005_NAM_NGAN_CAM_THAN_SEED",
+      "gender": "male",
+      "file": "VOICE_005_NAM_NGAN_CAM_THAN_SEED__ENROLL.wav"
+    },
+    {
+      "name": "VOICE_101_NAM_MONG_TEST",
+      "gender": "male",
+      "file": "VOICE_101_NAM_MONG_TEST__ENROLL.wav"
+    }
+  ]
+}

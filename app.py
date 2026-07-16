@@ -2,7 +2,7 @@
 """
 detach-voice-gender - Xac dinh tung block SRT la giong nam hay nu, tu 1 file
 video/audio + srt tach bang speech-to-text.
-Dung pyannote (diarization) + wav2vec2 age/gender (audeering) de phan loai.
+Dung pyannote (diarization) + ECAPA de doi chieu Voice DNA da verify.
 
 Ca 3 thu muc input/output/resume nam chung duoi 1 thu muc cha (mac dinh
 "detach-voice-gender" trong /kaggle/working hoac cwd), giong cach to chuc cua
@@ -16,6 +16,8 @@ import sys
 import threading
 import time
 import json
+import hashlib
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -66,8 +68,11 @@ AUTO_WATCH = os.environ.get("GENDERSFX_AUTO_WATCH", "1") != "0"
 AUTO_WATCH_INTERVAL = int(os.environ.get("GENDERSFX_AUTO_WATCH_SEC", "20"))
 STALE_LOCK_SEC = int(os.environ.get("GENDERSFX_STALE_LOCK_SEC", "120"))
 MULTI_GPU_CHUNKS = os.environ.get("GENDERSFX_MULTI_GPU_CHUNKS", "1") != "0"
-SPEAKER_MATCH_THRESHOLD = float(os.environ.get("GENDERSFX_SPEAKER_MATCH_THRESHOLD", "0.86"))
+SPEAKER_MATCH_THRESHOLD = float(os.environ.get("GENDERSFX_SPEAKER_MATCH_THRESHOLD", "0.55"))
 APP_RUN_ID = uuid.uuid4().hex
+PIPELINE_VERSION = "voice_dna_v1"
+PIPELINE_MARKER_NAME = ".voice_dna_v1.done"
+_DNA_FINGERPRINT = None
 print("[*] app.py khoi dong, dang chuan bi auto-watch...", flush=True)
 
 
@@ -222,8 +227,35 @@ def list_input_episodes():
     return sorted(pairs.keys())
 
 
+def _dna_library_fingerprint():
+    global _DNA_FINGERPRINT
+    if _DNA_FINGERPRINT is not None:
+        return _DNA_FINGERPRINT
+    dna_dir = Path(__file__).resolve().parent / "voice_dna"
+    config_path = dna_dir / "library.json"
+    digest = hashlib.sha256(PIPELINE_VERSION.encode("utf-8"))
+    digest.update(config_path.read_bytes())
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    for group in config.get("groups", []):
+        wav_path = dna_dir / str(group.get("file", ""))
+        digest.update(wav_path.name.encode("utf-8"))
+        digest.update(wav_path.read_bytes())
+    _DNA_FINGERPRINT = digest.hexdigest()
+    return _DNA_FINGERPRINT
+
+
 def _episode_done(episode_name):
     out_dir = Path(OUTPUT_DIR) / episode_name
+    marker = out_dir / PIPELINE_MARKER_NAME
+    try:
+        marker_matches = (
+            marker.is_file()
+            and marker.read_text(encoding="ascii").strip() == _dna_library_fingerprint()
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        marker_matches = False
+    if not marker_matches:
+        return False
     return any(p.is_file() and p.stat().st_size > 0 for p in out_dir.glob("*_voiceblock.txt"))
 
 
@@ -510,10 +542,8 @@ def _read_speaker_txt(path):
 
 
 def _confidence_value(text):
-    try:
-        return float(str(text).replace("conf", "").strip())
-    except Exception:
-        return 0.0
+    matches = re.findall(r"(?:score|conf)\s+(-?\d+(?:\.\d+)?)", str(text))
+    return float(matches[-1]) if matches else 0.0
 
 
 def _merge_speaker_rows(rows):
@@ -589,12 +619,20 @@ def _global_speaker_map(profiles):
         gender = profile.get("gender", "unknown")
         embedding = profile.get("embedding")
         samples = max(1, int(profile.get("samples") or 1))
-        if not local_name or not embedding or gender == "unknown":
+        dna_name = profile.get("dna_name")
+        dna_score = float(profile.get("confidence") or 0.0)
+        dna_margin = float(profile.get("dna_margin") or 0.0)
+        matched_dna = dna_name if gender != "unknown" else None
+        if not local_name or not embedding:
             continue
 
         best_idx, best_score = None, -1.0
         for idx, cluster in enumerate(clusters):
-            if cluster["gender"] != gender:
+            if matched_dna and cluster.get("dna_name") == matched_dna:
+                best_idx, best_score = idx, 1.0
+                break
+            if (cluster["gender"] != "unknown" and gender != "unknown"
+                    and cluster["gender"] != gender):
                 continue
             score = _cosine(embedding, cluster["embedding"])
             if score > best_score:
@@ -604,6 +642,9 @@ def _global_speaker_map(profiles):
             clusters.append({
                 "name": f"GLOBAL_SPEAKER_{len(clusters):02d}",
                 "gender": gender,
+                "dna_name": matched_dna,
+                "dna_score": dna_score,
+                "dna_margin": dna_margin,
                 "embedding": list(embedding),
                 "samples": samples,
             })
@@ -617,8 +658,14 @@ def _global_speaker_map(profiles):
             for old, new in zip(cluster["embedding"], embedding)
         ]
         cluster["samples"] = total
+        if gender != "unknown" and (
+                cluster["gender"] == "unknown" or dna_score > cluster["dna_score"]):
+            cluster["gender"] = gender
+            cluster["dna_name"] = matched_dna
+            cluster["dna_score"] = dna_score
+            cluster["dna_margin"] = dna_margin
         mapping[local_name] = cluster["name"]
-    return mapping
+    return mapping, {cluster["name"]: cluster for cluster in clusters}
 
 
 def _voiceblock_txt_path(out_dir, srt_path):
@@ -736,10 +783,20 @@ def _merge_chunk_outputs(episode_name, chunks, original_srt_path):
             profile["local_speaker"] = local_speaker
             speaker_profiles.append(profile)
 
-    global_map = _global_speaker_map(speaker_profiles)
+    global_map, global_profiles = _global_speaker_map(speaker_profiles)
     for row in speaker_rows:
         if row["speaker"] in global_map:
             row["speaker"] = global_map[row["speaker"]]
+            profile = global_profiles[row["speaker"]]
+            if profile["gender"] != "unknown":
+                row["gender"] = {"male": "Nam", "female": "Nu"}.get(
+                    profile["gender"], "unknown",
+                )
+                row["confidence"] = (
+                    f"dna {profile.get('dna_name') or 'NO_MATCH'} "
+                    f"score {profile['dna_score']:.3f} "
+                    f"margin {profile['dna_margin']:.3f}"
+                )
     if global_map:
         print(
             f"[*] Da khop {len(global_map)} speaker chunk -> "
@@ -748,16 +805,30 @@ def _merge_chunk_outputs(episode_name, chunks, original_srt_path):
             flush=True,
         )
 
+    # Sau khi gop chunk, mot chunk da khop DNA se truyen nhan cho cac block
+    # cung global speaker o chunk khac. Block khong co DNA van la unknown.
+    gender_by_index = {}
+    for gender, values in by_gender.items():
+        for idx in values:
+            gender_by_index[int(idx)] = gender
+    text_gender_to_key = {
+        "Nam": "male", "Nu": "female", "Nữ": "female",
+        "Tre em": "child", "Trẻ em": "child", "unknown": "unknown",
+        "Không rõ": "unknown",
+    }
+    for row in speaker_rows:
+        gender = text_gender_to_key.get(row["gender"], "unknown")
+        for idx in row.get("indices", []):
+            gender_by_index[int(idx)] = gender
+    by_gender = {"male": [], "female": [], "child": [], "unknown": []}
+    for sub in _open_srt_fallback(original_srt_path):
+        by_gender[gender_by_index.get(sub.index, "unknown")].append(sub.index)
+
     out_dir = Path(OUTPUT_DIR) / episode_name
     out_dir.mkdir(parents=True, exist_ok=True)
     final_txt = _voiceblock_txt_path(out_dir, original_srt_path)
     _write_gender_txt(final_txt, by_gender)
     _write_speaker_txt(_speaker_txt_path(out_dir, original_srt_path), _merge_speaker_rows(speaker_rows))
-
-    gender_by_index = {}
-    for gender, values in by_gender.items():
-        for idx in values:
-            gender_by_index[int(idx)] = gender
 
     speaker_by_index = {}
     for row in speaker_rows:
@@ -772,6 +843,9 @@ def _merge_chunk_outputs(episode_name, chunks, original_srt_path):
             speaker = speaker_by_index.get(sub.index, "unknown")
             f.write(f"{sub.index}\n{sub.start} --> {sub.end}\n"
                     f"[{speaker}|{gender}] {sub.text}\n\n")
+    (out_dir / PIPELINE_MARKER_NAME).write_text(
+        _dna_library_fingerprint(), encoding="ascii",
+    )
     return final_txt, final_srt
 
 
@@ -1068,7 +1142,8 @@ if not HEADLESS:
         gr.Markdown(
             "# detach-voice-gender\n"
             "Xac dinh **tung block SRT** la giong **nam hay nu**, dua tren speaker "
-            "diarization (pyannote) + phan loai gioi tinh bang giong noi (wav2vec2).\n\n"
+            "diarization (pyannote) + doi chieu thu vien **Voice DNA da verify**. "
+            "Khong khop DNA se duoc ghi la **Khong ro**.\n\n"
             f"Thu muc lam viec: `{ROOT_DIR}` (gom `input/`, `output/`, `resume/`).\n"
             "Bo file media + srt (cung ten, khac duoi) vao `input/` roi bam 'Lam moi', "
             "hoac upload truc tiep ben duoi.\n\n"

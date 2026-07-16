@@ -124,9 +124,6 @@ def install_requirements(app_dir: Path):
         ("gradio", "gradio"),
         ("pyannote.audio", "pyannote.audio"),
         ("speechbrain", "speechbrain"),
-        ("transformers", "transformers"),
-        ("safetensors", "safetensors"),
-        ("librosa", "librosa"),
         ("pysrt", "pysrt"),
         ("soundfile", "soundfile"),
     ]

@@ -10,8 +10,5 @@ gradio
 # phai do version - xem README muc "Accept license".
 pyannote.audio
 speechbrain
-transformers
-safetensors
-librosa
 pysrt
 soundfile
