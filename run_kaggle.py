@@ -19,9 +19,15 @@ RCLONE_CONF_PATH = Path.home() / ".config" / "rclone" / "rclone.conf"
 REPO_URL = "https://github.com/ngochoa26031-ops/detach-voice-gender.git"
 
 
+def _ts():
+    import time
+    return time.strftime("%H:%M:%S")
+
+
 def run(cmd, **kwargs):
-    print("[*]", " ".join(str(x) for x in cmd), flush=True)
+    print(f"[{_ts()}] [*]", " ".join(str(x) for x in cmd), flush=True)
     subprocess.run(cmd, check=True, timeout=kwargs.pop("timeout", None), **kwargs)
+    print(f"[{_ts()}] [*] Lenh xong:", " ".join(str(x) for x in cmd), flush=True)
 
 
 def _module_installed(name: str) -> bool:

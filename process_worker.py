@@ -14,8 +14,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core import process_episode
-
 
 def _ts():
     return time.strftime("%H:%M:%S")
@@ -46,6 +44,8 @@ def main():
     threading.Thread(target=heartbeat, daemon=True).start()
 
     try:
+        report("Đang import core/model libraries...")
+        from core import process_episode
         txt_path, srt_out_path = process_episode(
             media_path, srt_path, out_dir, hf_token,
             resume_dir=resume_dir, episode_name=episode_name, progress_cb=report,

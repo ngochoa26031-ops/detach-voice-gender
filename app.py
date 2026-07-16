@@ -21,8 +21,6 @@ from pathlib import Path
 
 import pysrt
 
-from core import process_episode
-
 HEADLESS = os.environ.get("GENDERSFX_HEADLESS", "0").strip().lower() in ("1", "true", "yes", "on")
 if HEADLESS:
     gr = None
@@ -305,6 +303,8 @@ def _release_lock(lock_path):
 
 
 def _run_pipeline(media_path, srt_path, episode_name, progress=None):
+    from core import process_episode
+
     def report(msg):
         if progress:
             progress(0, desc=msg)
