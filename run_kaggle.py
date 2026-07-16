@@ -170,6 +170,7 @@ def main():
     print(f"[*] Dang clone source moi tu GitHub: {REPO_URL}", flush=True)
     run(["git", "clone", "--depth", "1", REPO_URL, str(app_dir)], timeout=300)
     print("[*] Clone source xong.", flush=True)
+    subprocess.run(["git", "-C", str(app_dir), "log", "-1", "--oneline"], check=False)
 
     install_requirements(app_dir)
     setup_rclone_from_secret()

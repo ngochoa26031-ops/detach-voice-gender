@@ -8,6 +8,7 @@ Ca 3 thu muc input/output/resume nam chung duoi 1 thu muc cha (mac dinh
 "detach-voice-gender" trong /kaggle/working hoac cwd), giong cach to chuc cua
 keepsfx, de de quan ly va de backup len Google Drive qua rclone.
 """
+print("[*] app.py bat dau chay (truoc import thu vien ngoai)...", flush=True)
 import os
 import shutil
 import subprocess
@@ -18,8 +19,6 @@ import json
 import uuid
 from datetime import datetime
 from pathlib import Path
-
-import pysrt
 
 HEADLESS = os.environ.get("GENDERSFX_HEADLESS", "0").strip().lower() in ("1", "true", "yes", "on")
 if HEADLESS:
@@ -400,10 +399,12 @@ def _sub_time_to_seconds(sub_time):
 
 
 def _seconds_to_sub_time(seconds):
+    import pysrt
     return pysrt.SubRipTime(milliseconds=max(0, int(round(seconds * 1000))))
 
 
 def _open_srt_fallback(path):
+    import pysrt
     for enc in ("utf-8", "utf-8-sig", "utf-16", "cp1258", "latin-1"):
         try:
             return pysrt.open(str(path), encoding=enc)
@@ -635,6 +636,7 @@ def _chunk_subtitles_by_count(srt_path, chunk_count):
 
 
 def _write_rebased_srt(subs, chunk_start, srt_path):
+    import pysrt
     rebased = pysrt.SubRipFile()
     for sub in subs:
         item = pysrt.SubRipItem(
