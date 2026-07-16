@@ -145,6 +145,8 @@ def detect_platform_dirs():
 
 def main():
     code_root, data_root = detect_platform_dirs()
+    code_root.mkdir(parents=True, exist_ok=True)
+    os.chdir(code_root)
     app_dir = code_root / "detach-voice-gender-src"
 
     # Moi lan chay deu lay code moi nhat tu GitHub, nen notebook co the giu nguyen.
