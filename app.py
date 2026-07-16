@@ -56,6 +56,7 @@ for _d in (INPUT_DIR, OUTPUT_DIR, RESUME_DIR):
 RCLONE_REMOTE = os.environ.get("GENDERSFX_RCLONE_REMOTE", "").strip()
 RCLONE_INPUT_REMOTE = os.environ.get("GENDERSFX_RCLONE_INPUT_REMOTE", "").strip()
 RCLONE_RESUME_REMOTE = os.environ.get("GENDERSFX_RCLONE_RESUME_REMOTE", "").strip()
+RCLONE_MODEL_REMOTE = os.environ.get("GENDERSFX_RCLONE_MODEL_REMOTE", "").strip()
 RCLONE_RATE_LIMIT_ARGS = ["--fast-list", "--tpslimit", "3", "--tpslimit-burst", "1"]
 RCLONE_INPUT_PULL_ARGS = RCLONE_RATE_LIMIT_ARGS + ["--ignore-existing"]
 
@@ -170,6 +171,12 @@ def _rclone_pull_dir(remote, local_dir, skip_existing=False):
             print(f"[{ts}] [!] Keo tu Drive LOI ({remote}): {result.stderr.strip()[-500:]}", flush=True)
     except Exception as exc:
         print(f"[{ts}] [!] Keo tu Drive LOI ({remote}): {exc}", flush=True)
+
+
+def _push_model_cache():
+    cache_dir = os.environ.get("HF_HOME", "").strip()
+    if RCLONE_MODEL_REMOTE and cache_dir:
+        _rclone_push_dir(cache_dir, RCLONE_MODEL_REMOTE, label="model cache")
 
 
 def _schedule_exit_after_done():
@@ -321,6 +328,7 @@ def _run_pipeline(media_path, srt_path, episode_name, progress=None):
         _rclone_push_dir(os.path.join(RESUME_DIR, episode_name),
                          f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}",
                          label="resume")
+    _push_model_cache()
     return txt_path, _speaker_txt_path(out_dir, srt_path), srt_out_path
 
 
@@ -892,6 +900,7 @@ def _finish_chunk_job(job):
             _rclone_push_dir(os.path.join(RESUME_DIR, episode_name),
                              f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}",
                              label="resume")
+        _push_model_cache()
         print(f"[*] '{episode_name}' xu ly xong bang multi-GPU chunks: {txt_path} | {srt_path}", flush=True)
     finally:
         _release_lock(job["lock_path"])
@@ -938,6 +947,7 @@ def _finish_worker(worker):
             _rclone_push_dir(os.path.join(RESUME_DIR, episode_name),
                              f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}",
                              label="resume")
+        _push_model_cache()
         print(f"[*] GPU {gpu_index}: '{episode_name}' xu ly xong.", flush=True)
     else:
         print(f"[!] GPU {gpu_index}: '{episode_name}' xu ly LOI (xem {worker['log_path']}), "

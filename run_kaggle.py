@@ -195,6 +195,40 @@ def setup_rclone_from_secret():
               f"Se KHONG tu backup len Drive duoc.", flush=True)
 
 
+def _derive_model_remote():
+    explicit = os.environ.get("GENDERSFX_RCLONE_MODEL_REMOTE", "").strip()
+    if explicit:
+        return explicit
+    for key, suffix in (
+        ("GENDERSFX_RCLONE_RESUME_REMOTE", "/resume"),
+        ("GENDERSFX_RCLONE_REMOTE", "/output"),
+        ("GENDERSFX_RCLONE_INPUT_REMOTE", "/input"),
+    ):
+        remote = os.environ.get(key, "").strip().rstrip("/")
+        if remote.endswith(suffix):
+            return remote[: -len(suffix)] + "/models"
+    return ""
+
+
+def configure_model_cache(data_root: Path):
+    cache_root = data_root / "model_cache" / "huggingface"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    os.environ["HF_HOME"] = str(cache_root)
+    os.environ["HUGGINGFACE_HUB_CACHE"] = str(cache_root / "hub")
+    os.environ["TRANSFORMERS_CACHE"] = str(cache_root / "hub")
+    model_remote = _derive_model_remote()
+    if model_remote:
+        os.environ["GENDERSFX_RCLONE_MODEL_REMOTE"] = model_remote
+    print(f"[*] HuggingFace model cache: {cache_root}", flush=True)
+
+    if model_remote and shutil.which("rclone") is not None:
+        print(f"[*] Dang keo model cache tu Drive neu co: {model_remote}", flush=True)
+        subprocess.run(
+            ["rclone", "copy", "-q", model_remote, str(cache_root), "--fast-list", "--tpslimit", "3", "--tpslimit-burst", "1"],
+            check=False, timeout=3600,
+        )
+
+
 def detect_platform_dirs():
     """Tra ve (code_root, data_root):
     - code_root: noi git clone code, luon la dia tam thoi (khong can ben vung).
@@ -249,6 +283,7 @@ def main():
 
     install_requirements(app_dir)
     setup_rclone_from_secret()
+    configure_model_cache(data_root)
 
     os.environ["HF_TOKEN"] = load_hf_token()
     os.environ["GENDERSFX_ROOT"] = str(data_root)
