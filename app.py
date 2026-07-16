@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import json
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -68,6 +69,7 @@ AUTO_WATCH_INTERVAL = int(os.environ.get("GENDERSFX_AUTO_WATCH_SEC", "20"))
 STALE_LOCK_SEC = int(os.environ.get("GENDERSFX_STALE_LOCK_SEC", "120"))
 MULTI_GPU_CHUNKS = os.environ.get("GENDERSFX_MULTI_GPU_CHUNKS", "1") != "0"
 SPEAKER_MATCH_THRESHOLD = float(os.environ.get("GENDERSFX_SPEAKER_MATCH_THRESHOLD", "0.86"))
+APP_RUN_ID = uuid.uuid4().hex
 
 
 def detect_gpu_count():
@@ -257,6 +259,15 @@ def _cleanup_stale_lock(episode_name):
     info = _read_lock(lock_path)
     pid = info.get("pid")
     age = max(0, time.time() - lock_path.stat().st_mtime)
+    run_id = info.get("run_id")
+    if run_id != APP_RUN_ID:
+        lock_path.unlink(missing_ok=True)
+        print(
+            f"[*] Bo lock cu cua '{episode_name}' "
+            f"(run_id={run_id or 'old-format'}, pid={pid or 'unknown'}, age={int(age)}s).",
+            flush=True,
+        )
+        return True
     if pid and _pid_is_running(pid):
         return False
     if pid or age >= STALE_LOCK_SEC:
@@ -280,7 +291,7 @@ def _try_acquire_lock(episode_name):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(lock_path, "x", encoding="utf-8") as f:
-            json.dump({"pid": os.getpid(), "time": time.time()}, f)
+            json.dump({"pid": os.getpid(), "run_id": APP_RUN_ID, "time": time.time()}, f)
         return lock_path
     except FileExistsError:
         if _cleanup_stale_lock(episode_name):
