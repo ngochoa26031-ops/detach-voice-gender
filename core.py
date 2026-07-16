@@ -191,6 +191,22 @@ def _classify_gender(audio_segment, sr):
     return probs  # [female, male, child]
 
 
+def _classify_gender_with_embedding(audio_segment, sr):
+    if len(audio_segment) < sr * 0.3:
+        return None, None
+    inputs = _processor(audio_segment, sampling_rate=sr, return_tensors="pt")
+    with torch.no_grad():
+        hidden = _gender_model.wav2vec2(inputs.input_values.to(_device))[0]
+        pooled = torch.mean(hidden, dim=1)
+        logits = _gender_model.gender(pooled)
+        probs = torch.softmax(logits, dim=-1).cpu().numpy()[0]
+        embedding = pooled.cpu().numpy()[0]
+    norm = float(np.linalg.norm(embedding))
+    if norm > 0:
+        embedding = embedding / norm
+    return probs, embedding
+
+
 def _sample_turns_for_gender(speaker_turns):
     """Chon mau turn dai/ro nhat cho tung speaker.
 
@@ -291,12 +307,33 @@ def _write_speaker_ranges_txt(txt_path, results):
     txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
 
 
+def _write_speaker_embeddings_json(json_path, speaker_profiles):
+    rows = []
+    for speaker in sorted(speaker_profiles):
+        profile = speaker_profiles[speaker]
+        embedding = profile.get("embedding")
+        if embedding is None:
+            continue
+        rows.append({
+            "speaker": speaker,
+            "gender": profile["label"],
+            "confidence": round(profile["confidence"], 6),
+            "samples": profile.get("samples", 0),
+            "embedding": [round(float(x), 8) for x in embedding],
+        })
+    json_path.write_text(json.dumps(rows), encoding="utf-8")
+
+
 def _voiceblock_txt_path(out_dir, srt_path):
     return Path(out_dir) / f"{Path(srt_path).stem}_voiceblock.txt"
 
 
 def _speaker_txt_path(out_dir, srt_path):
     return Path(out_dir) / f"{Path(srt_path).stem}_speaker.txt"
+
+
+def _speaker_embed_json_path(out_dir, srt_path):
+    return Path(out_dir) / f"{Path(srt_path).stem}_speaker_embed.json"
 
 
 def _extract_speaker_turns(diarization):
@@ -393,6 +430,7 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
         full_audio = full_audio.mean(axis=1)
 
     speaker_probs = defaultdict(list)
+    speaker_embeddings = defaultdict(list)
     for speaker_idx, speaker in enumerate(speaker_names, start=1):
         turns = sampled_turns[speaker]
         if progress_cb:
@@ -402,16 +440,26 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
             )
         for start, end, _ in turns:
             seg = full_audio[int(start * sr):int(end * sr)]
-            probs = _classify_gender(seg, sr)
+            probs, embedding = _classify_gender_with_embedding(seg, sr)
             if probs is not None:
                 speaker_probs[speaker].append(probs)
+            if embedding is not None:
+                speaker_embeddings[speaker].append(embedding)
 
     speaker_gender = {}
     for speaker, probs_list in speaker_probs.items():
         avg = np.mean(probs_list, axis=0)
+        emb = None
+        if speaker_embeddings.get(speaker):
+            emb = np.mean(speaker_embeddings[speaker], axis=0)
+            norm = float(np.linalg.norm(emb))
+            if norm > 0:
+                emb = emb / norm
         speaker_gender[speaker] = {
             "label": GENDER_LABELS[int(np.argmax(avg))],
             "confidence": float(avg.max()),
+            "embedding": emb.tolist() if emb is not None else None,
+            "samples": len(probs_list),
         }
 
     if progress_cb:
@@ -452,6 +500,11 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
     os.replace(speaker_tmp, speaker_txt_path)
     if progress_cb:
         progress_cb(f"Da ghi speaker TXT: {speaker_txt_path}")
+
+    speaker_embed_path = _speaker_embed_json_path(out_dir, srt_path)
+    speaker_embed_tmp = speaker_embed_path.with_suffix(".json.tmp")
+    _write_speaker_embeddings_json(speaker_embed_tmp, speaker_gender)
+    os.replace(speaker_embed_tmp, speaker_embed_path)
 
     annotated_srt_path = out_dir / "annotated.srt"
     srt_tmp = annotated_srt_path.with_suffix(".srt.tmp")

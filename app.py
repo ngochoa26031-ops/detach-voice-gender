@@ -67,6 +67,7 @@ AUTO_WATCH = os.environ.get("GENDERSFX_AUTO_WATCH", "1") != "0"
 AUTO_WATCH_INTERVAL = int(os.environ.get("GENDERSFX_AUTO_WATCH_SEC", "20"))
 STALE_LOCK_SEC = int(os.environ.get("GENDERSFX_STALE_LOCK_SEC", "120"))
 MULTI_GPU_CHUNKS = os.environ.get("GENDERSFX_MULTI_GPU_CHUNKS", "1") != "0"
+SPEAKER_MATCH_THRESHOLD = float(os.environ.get("GENDERSFX_SPEAKER_MATCH_THRESHOLD", "0.86"))
 
 
 def detect_gpu_count():
@@ -492,6 +493,31 @@ def _read_speaker_txt(path):
     return rows
 
 
+def _confidence_value(text):
+    try:
+        return float(str(text).replace("conf", "").strip())
+    except Exception:
+        return 0.0
+
+
+def _merge_speaker_rows(rows):
+    merged = {}
+    for row in rows:
+        key = row["speaker"]
+        item = merged.setdefault(key, {
+            "speaker": key,
+            "gender": row["gender"],
+            "confidence": row["confidence"],
+            "indices": [],
+        })
+        item["indices"].extend(row.get("indices", []))
+        if _confidence_value(row["confidence"]) > _confidence_value(item["confidence"]):
+            item["confidence"] = row["confidence"]
+        if item["gender"] == "unknown" and row["gender"] != "unknown":
+            item["gender"] = row["gender"]
+    return [merged[key] for key in sorted(merged)]
+
+
 def _write_speaker_txt(path, rows):
     lines = []
     for row in rows:
@@ -513,6 +539,70 @@ def _find_voiceblock_txt(out_dir):
 def _find_speaker_txt(out_dir):
     files = sorted(Path(out_dir).glob("*_speaker.txt"))
     return files[0] if files else None
+
+
+def _find_speaker_embed_json(out_dir):
+    files = sorted(Path(out_dir).glob("*_speaker_embed.json"))
+    return files[0] if files else None
+
+
+def _read_speaker_embed_json(path):
+    if not path or not Path(path).is_file():
+        return []
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _cosine(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    if na <= 0 or nb <= 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _global_speaker_map(profiles):
+    clusters = []
+    mapping = {}
+    for profile in profiles:
+        local_name = profile.get("local_speaker") or profile.get("speaker")
+        gender = profile.get("gender", "unknown")
+        embedding = profile.get("embedding")
+        samples = max(1, int(profile.get("samples") or 1))
+        if not local_name or not embedding or gender == "unknown":
+            continue
+
+        best_idx, best_score = None, -1.0
+        for idx, cluster in enumerate(clusters):
+            if cluster["gender"] != gender:
+                continue
+            score = _cosine(embedding, cluster["embedding"])
+            if score > best_score:
+                best_idx, best_score = idx, score
+
+        if best_idx is None or best_score < SPEAKER_MATCH_THRESHOLD:
+            clusters.append({
+                "name": f"GLOBAL_SPEAKER_{len(clusters):02d}",
+                "gender": gender,
+                "embedding": list(embedding),
+                "samples": samples,
+            })
+            mapping[local_name] = clusters[-1]["name"]
+            continue
+
+        cluster = clusters[best_idx]
+        total = cluster["samples"] + samples
+        cluster["embedding"] = [
+            (old * cluster["samples"] + new * samples) / total
+            for old, new in zip(cluster["embedding"], embedding)
+        ]
+        cluster["samples"] = total
+        mapping[local_name] = cluster["name"]
+    return mapping
 
 
 def _voiceblock_txt_path(out_dir, srt_path):
@@ -609,6 +699,7 @@ def _prepare_episode_chunks(pair, episode_name):
 def _merge_chunk_outputs(episode_name, chunks, original_srt_path):
     by_gender = {"male": [], "female": [], "child": [], "unknown": []}
     speaker_rows = []
+    speaker_profiles = []
     for chunk in chunks:
         chunk_txt = _find_voiceblock_txt(chunk["out_dir"])
         if chunk_txt is None:
@@ -622,24 +713,48 @@ def _merge_chunk_outputs(episode_name, chunks, original_srt_path):
             row["speaker"] = f"part{chunk['part']:03d}/{row['speaker']}"
             speaker_rows.append(row)
 
+        chunk_embed_json = _find_speaker_embed_json(chunk["out_dir"])
+        for profile in _read_speaker_embed_json(chunk_embed_json):
+            local_speaker = f"part{chunk['part']:03d}/{profile.get('speaker', '')}"
+            profile["local_speaker"] = local_speaker
+            speaker_profiles.append(profile)
+
+    global_map = _global_speaker_map(speaker_profiles)
+    for row in speaker_rows:
+        if row["speaker"] in global_map:
+            row["speaker"] = global_map[row["speaker"]]
+    if global_map:
+        print(
+            f"[*] Da khop {len(global_map)} speaker chunk -> "
+            f"{len(set(global_map.values()))} global speaker "
+            f"(nguong {SPEAKER_MATCH_THRESHOLD:.2f}).",
+            flush=True,
+        )
+
     out_dir = Path(OUTPUT_DIR) / episode_name
     out_dir.mkdir(parents=True, exist_ok=True)
     final_txt = _voiceblock_txt_path(out_dir, original_srt_path)
     _write_gender_txt(final_txt, by_gender)
-    _write_speaker_txt(_speaker_txt_path(out_dir, original_srt_path), speaker_rows)
+    _write_speaker_txt(_speaker_txt_path(out_dir, original_srt_path), _merge_speaker_rows(speaker_rows))
 
     gender_by_index = {}
     for gender, values in by_gender.items():
         for idx in values:
             gender_by_index[int(idx)] = gender
 
+    speaker_by_index = {}
+    for row in speaker_rows:
+        for idx in row.get("indices", []):
+            speaker_by_index[int(idx)] = row["speaker"]
+
     final_srt = out_dir / "annotated.srt"
     subs = _open_srt_fallback(original_srt_path)
     with open(final_srt, "w", encoding="utf-8") as f:
         for sub in subs:
             gender = gender_by_index.get(sub.index, "unknown")
+            speaker = speaker_by_index.get(sub.index, "unknown")
             f.write(f"{sub.index}\n{sub.start} --> {sub.end}\n"
-                    f"[{gender}] {sub.text}\n\n")
+                    f"[{speaker}|{gender}] {sub.text}\n\n")
     return final_txt, final_srt
 
 

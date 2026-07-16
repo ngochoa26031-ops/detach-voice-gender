@@ -92,6 +92,8 @@ Mỗi episode có 1 thư mục `output/<tên_episode>/` chứa:
   `Nam: 1-33, 36-59` / `Nữ: 34-35, 60-61`
 - `<tên_srt>_speaker.txt` — danh sách range block theo từng speaker, ví dụ:
   `SPEAKER_12 | Nam | conf 0.934 | blocks 1347-1348, 1354`
+  Khi chạy chia nhiều GPU, các speaker ở từng chunk sẽ được so embedding giọng
+  và gộp thành `GLOBAL_SPEAKER_00`, `GLOBAL_SPEAKER_01` nếu đủ giống nhau.
 - `annotated.srt` — srt gốc, thêm tiền tố `[speakerX|gender]` mỗi dòng thoại
 
 ## Cấu trúc mã nguồn
