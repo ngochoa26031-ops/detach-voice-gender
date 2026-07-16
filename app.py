@@ -70,8 +70,8 @@ STALE_LOCK_SEC = int(os.environ.get("GENDERSFX_STALE_LOCK_SEC", "120"))
 MULTI_GPU_CHUNKS = os.environ.get("GENDERSFX_MULTI_GPU_CHUNKS", "1") != "0"
 SPEAKER_MATCH_THRESHOLD = float(os.environ.get("GENDERSFX_SPEAKER_MATCH_THRESHOLD", "0.55"))
 APP_RUN_ID = uuid.uuid4().hex
-PIPELINE_VERSION = "voice_dna_v1"
-PIPELINE_MARKER_NAME = ".voice_dna_v1.done"
+PIPELINE_VERSION = "voice_dna_v2"
+PIPELINE_MARKER_NAME = ".voice_dna_v2.done"
 _DNA_FINGERPRINT = None
 print("[*] app.py khoi dong, dang chuan bi auto-watch...", flush=True)
 
@@ -552,16 +552,22 @@ def _merge_speaker_rows(rows):
         key = row["speaker"]
         item = merged.setdefault(key, {
             "speaker": key,
-            "gender": row["gender"],
-            "confidence": row["confidence"],
+            "gender": "unknown",
+            "confidence": "block DNA per-block",
+            "genders": set(),
             "indices": [],
         })
         item["indices"].extend(row.get("indices", []))
-        if _confidence_value(row["confidence"]) > _confidence_value(item["confidence"]):
-            item["confidence"] = row["confidence"]
-        if item["gender"] == "unknown" and row["gender"] != "unknown":
-            item["gender"] = row["gender"]
-    return [merged[key] for key in sorted(merged)]
+        item["genders"].add(row["gender"])
+    result = []
+    for key in sorted(merged):
+        item = merged[key]
+        known = item.pop("genders") - {"unknown", "Không rõ"}
+        item["gender"] = next(iter(known)) if len(known) == 1 else (
+            "mixed" if known else "unknown"
+        )
+        result.append(item)
+    return result
 
 
 def _write_speaker_txt(path, rows):
@@ -628,12 +634,6 @@ def _global_speaker_map(profiles):
 
         best_idx, best_score = None, -1.0
         for idx, cluster in enumerate(clusters):
-            if matched_dna and cluster.get("dna_name") == matched_dna:
-                best_idx, best_score = idx, 1.0
-                break
-            if (cluster["gender"] != "unknown" and gender != "unknown"
-                    and cluster["gender"] != gender):
-                continue
             score = _cosine(embedding, cluster["embedding"])
             if score > best_score:
                 best_idx, best_score = idx, score
@@ -783,20 +783,10 @@ def _merge_chunk_outputs(episode_name, chunks, original_srt_path):
             profile["local_speaker"] = local_speaker
             speaker_profiles.append(profile)
 
-    global_map, global_profiles = _global_speaker_map(speaker_profiles)
+    global_map, _ = _global_speaker_map(speaker_profiles)
     for row in speaker_rows:
         if row["speaker"] in global_map:
             row["speaker"] = global_map[row["speaker"]]
-            profile = global_profiles[row["speaker"]]
-            if profile["gender"] != "unknown":
-                row["gender"] = {"male": "Nam", "female": "Nu"}.get(
-                    profile["gender"], "unknown",
-                )
-                row["confidence"] = (
-                    f"dna {profile.get('dna_name') or 'NO_MATCH'} "
-                    f"score {profile['dna_score']:.3f} "
-                    f"margin {profile['dna_margin']:.3f}"
-                )
     if global_map:
         print(
             f"[*] Da khop {len(global_map)} speaker chunk -> "
@@ -805,24 +795,13 @@ def _merge_chunk_outputs(episode_name, chunks, original_srt_path):
             flush=True,
         )
 
-    # Sau khi gop chunk, mot chunk da khop DNA se truyen nhan cho cac block
-    # cung global speaker o chunk khac. Block khong co DNA van la unknown.
+    # Nhan gender da duoc cham rieng tung block trong moi chunk. Tuyet doi
+    # khong ghi de bang nhan speaker khi merge, vi mot cluster co the bi tron
+    # nhieu giong Nam/Nu.
     gender_by_index = {}
     for gender, values in by_gender.items():
         for idx in values:
             gender_by_index[int(idx)] = gender
-    text_gender_to_key = {
-        "Nam": "male", "Nu": "female", "Nữ": "female",
-        "Tre em": "child", "Trẻ em": "child", "unknown": "unknown",
-        "Không rõ": "unknown",
-    }
-    for row in speaker_rows:
-        gender = text_gender_to_key.get(row["gender"], "unknown")
-        for idx in row.get("indices", []):
-            gender_by_index[int(idx)] = gender
-    by_gender = {"male": [], "female": [], "child": [], "unknown": []}
-    for sub in _open_srt_fallback(original_srt_path):
-        by_gender[gender_by_index.get(sub.index, "unknown")].append(sub.index)
 
     out_dir = Path(OUTPUT_DIR) / episode_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1141,8 +1120,9 @@ if not HEADLESS:
     with gr.Blocks(title="detach-voice-gender") as demo:
         gr.Markdown(
             "# detach-voice-gender\n"
-            "Xac dinh **tung block SRT** la giong **nam hay nu**, dua tren speaker "
-            "diarization (pyannote) + doi chieu thu vien **Voice DNA da verify**. "
+            "Xac dinh **tung block SRT** la giong **nam hay nu** bang Voice DNA "
+            "rieng tung block + speaker prior nhe tu diarization (pyannote). "
+            "Doi chieu thu vien **Voice DNA da verify**; "
             "Khong khop DNA se duoc ghi la **Khong ro**.\n\n"
             f"Thu muc lam viec: `{ROOT_DIR}` (gom `input/`, `output/`, `resume/`).\n"
             "Bo file media + srt (cung ten, khac duoi) vao `input/` roi bam 'Lam moi', "

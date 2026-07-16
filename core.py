@@ -43,8 +43,12 @@ DNA_LIBRARY_DIR = Path(os.environ.get(
 DNA_MATCH_THRESHOLD = float(os.environ.get("GENDERSFX_DNA_MATCH_THRESHOLD", "0.45"))
 DNA_GENDER_MARGIN = float(os.environ.get("GENDERSFX_DNA_GENDER_MARGIN", "0.08"))
 DNA_WINDOW_SECONDS = float(os.environ.get("GENDERSFX_DNA_WINDOW_SECONDS", "8"))
-PIPELINE_VERSION = "voice_dna_v1"
-PIPELINE_MARKER_NAME = ".voice_dna_v1.done"
+BLOCK_DNA_SPEAKER_WEIGHT = float(os.environ.get("GENDERSFX_BLOCK_SPEAKER_WEIGHT", "0.60"))
+BLOCK_DNA_MIN_MARGIN = float(os.environ.get("GENDERSFX_BLOCK_DNA_MIN_MARGIN", "0.12"))
+BLOCK_DNA_BATCH_SIZE = max(1, int(os.environ.get("GENDERSFX_BLOCK_DNA_BATCH_SIZE", "24")))
+BLOCK_DNA_MIN_SECONDS = float(os.environ.get("GENDERSFX_BLOCK_DNA_MIN_SECONDS", "0.30"))
+PIPELINE_VERSION = "voice_dna_v2"
+PIPELINE_MARKER_NAME = ".voice_dna_v2.done"
 
 _device = None
 _diarization_pipeline = None
@@ -136,10 +140,14 @@ def ensure_models(hf_token: str, progress_cb=None):
             from speechbrain.inference.speaker import EncoderClassifier
         except ImportError:
             from speechbrain.pretrained import EncoderClassifier
-        _speaker_encoder = EncoderClassifier.from_hparams(
-            source=DNA_MODEL_NAME,
-            run_opts={"device": str(_device)},
-        )
+        encoder_kwargs = {
+            "source": DNA_MODEL_NAME,
+            "run_opts": {"device": str(_device)},
+        }
+        if os.name == "nt":
+            from speechbrain.utils.fetching import LocalStrategy
+            encoder_kwargs["local_strategy"] = LocalStrategy.COPY
+        _speaker_encoder = EncoderClassifier.from_hparams(**encoder_kwargs)
 
     return _device
 
@@ -187,6 +195,51 @@ def _encode_voice_segments(audio_segments, sr):
     return embeddings
 
 
+def _encode_voice_blocks(audio_segments, sr, progress_cb=None):
+    """Tra ve dung mot embedding cho moi block, gom trung binh neu block dai."""
+    if sr != 16000:
+        raise ValueError(f"Voice DNA can audio 16kHz, nhan duoc {sr}Hz")
+
+    max_samples = max(1, int(DNA_WINDOW_SECONDS * sr))
+    min_samples = max(1, int(BLOCK_DNA_MIN_SECONDS * sr))
+    windows, owners = [], []
+    for block_idx, segment in enumerate(audio_segments):
+        audio = np.asarray(segment, dtype=np.float32).reshape(-1)
+        if len(audio) < min_samples:
+            audio = np.pad(audio, (0, min_samples - len(audio)))
+        for start in range(0, len(audio), max_samples):
+            chunk = audio[start:start + max_samples]
+            if len(chunk) < min_samples:
+                chunk = np.pad(chunk, (0, min_samples - len(chunk)))
+            windows.append(chunk)
+            owners.append(block_idx)
+
+    grouped = [[] for _ in audio_segments]
+    total = len(windows)
+    for offset in range(0, total, BLOCK_DNA_BATCH_SIZE):
+        batch = windows[offset:offset + BLOCK_DNA_BATCH_SIZE]
+        longest = max(len(item) for item in batch)
+        waveforms = torch.zeros((len(batch), longest), dtype=torch.float32)
+        lengths = torch.zeros(len(batch), dtype=torch.float32)
+        for idx, item in enumerate(batch):
+            waveforms[idx, :len(item)] = torch.from_numpy(item)
+            lengths[idx] = len(item) / longest
+        with torch.no_grad():
+            encoded = _speaker_encoder.encode_batch(
+                waveforms.to(_device), lengths.to(_device), normalize=True,
+            )
+        encoded = encoded.detach().cpu().numpy().reshape(len(batch), -1)
+        for idx, embedding in enumerate(encoded):
+            if np.isfinite(embedding).all():
+                grouped[owners[offset + idx]].append(embedding)
+        if progress_cb and (offset == 0 or offset + len(batch) >= total
+                            or (offset // BLOCK_DNA_BATCH_SIZE) % 10 == 0):
+            progress_cb(
+                f"Đã tạo DNA embedding {min(offset + len(batch), total)}/{total} block..."
+            )
+    return [_mean_embedding(items) for items in grouped]
+
+
 def _mean_embedding(embeddings):
     if not embeddings:
         return None
@@ -231,6 +284,23 @@ def _load_dna_profiles(progress_cb=None):
 
 def _cosine_similarity(left, right):
     return float(np.dot(left, right))
+
+
+def _dna_gender_scores(embedding, dna_profiles):
+    scores = [
+        (profile, _cosine_similarity(embedding, profile["embedding"]))
+        for profile in dna_profiles
+    ]
+    male_score = max(
+        (score for profile, score in scores if profile["gender"] == "male"),
+        default=-1.0,
+    )
+    female_score = max(
+        (score for profile, score in scores if profile["gender"] == "female"),
+        default=-1.0,
+    )
+    best_profile, best_score = max(scores, key=lambda item: item[1])
+    return male_score, female_score, best_profile["name"], best_score
 
 
 def _match_voice_dna(embedding, dna_profiles):
@@ -370,25 +440,24 @@ def _write_gender_ranges_txt(txt_path, results):
 
 def _write_speaker_ranges_txt(txt_path, results):
     by_speaker = defaultdict(list)
-    speaker_info = {}
+    gender_counts = defaultdict(lambda: defaultdict(int))
     for row in results:
         speaker = row["speaker"]
         by_speaker[speaker].append(row["index"])
-        speaker_info.setdefault(speaker, (
-            row["gender"], row["confidence"], row.get("dna_name"),
-            row.get("dna_margin", 0.0),
-        ))
+        gender_counts[speaker][row["gender"]] += 1
 
     lines = []
     for speaker in sorted(by_speaker):
-        gender, confidence, dna_name, dna_margin = speaker_info.get(
-            speaker, ("unknown", 0.0, None, 0.0),
+        counts = gender_counts[speaker]
+        present = [gender for gender, count in counts.items() if count]
+        gender_vi = (
+            GENDER_LABEL_VI.get(present[0], present[0])
+            if len(present) == 1 else "mixed"
         )
-        gender_vi = GENDER_LABEL_VI.get(gender, gender)
-        match_name = dna_name or "NO_MATCH"
         lines.append(
-            f"{speaker} | {gender_vi} | dna {match_name} score {confidence:.3f} "
-            f"margin {dna_margin:.3f} | "
+            f"{speaker} | {gender_vi} | block DNA "
+            f"Nam {counts.get('male', 0)} Nu {counts.get('female', 0)} "
+            f"unknown {counts.get('unknown', 0)} | "
             f"blocks {_format_ranges(by_speaker[speaker])}"
         )
 
@@ -522,6 +591,109 @@ def _save_gender_profiles_cache(cache_path, profiles):
     os.replace(tmp_path, cache_path)
 
 
+def _block_embedding_cache_path(resume_dir, episode_name, srt_path):
+    if not resume_dir:
+        return None
+    digest = hashlib.sha256()
+    digest.update(DNA_MODEL_NAME.encode("utf-8"))
+    digest.update(Path(srt_path).read_bytes())
+    return (Path(resume_dir) / episode_name
+            / f"block_embeddings_ecapa_{digest.hexdigest()[:12]}.npz")
+
+
+def _load_block_embeddings(cache_path, block_ids):
+    if not cache_path or not cache_path.is_file():
+        return None
+    try:
+        with np.load(cache_path) as data:
+            cached_ids = data["ids"].astype(np.int64).tolist()
+            embeddings = data["embeddings"].astype(np.float32)
+        if cached_ids != [int(idx) for idx in block_ids]:
+            return None
+        return [row if np.isfinite(row).all() else None for row in embeddings]
+    except Exception:
+        return None
+
+
+def _save_block_embeddings(cache_path, block_ids, embeddings):
+    if not cache_path:
+        return
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    dimension = next((len(item) for item in embeddings if item is not None), 192)
+    matrix = np.full((len(embeddings), dimension), np.nan, dtype=np.float32)
+    for idx, embedding in enumerate(embeddings):
+        if embedding is not None:
+            matrix[idx] = embedding
+    tmp_path = cache_path.with_suffix(".npz.tmp")
+    with open(tmp_path, "wb") as handle:
+        np.savez_compressed(
+            handle,
+            ids=np.asarray(block_ids, dtype=np.int64),
+            embeddings=matrix,
+        )
+    os.replace(tmp_path, cache_path)
+
+
+def _classify_blocks_with_dna(subs, sub_speakers, full_audio, sr, dna_profiles,
+                              cache_path=None, progress_cb=None):
+    block_ids = [sub.index for sub in subs]
+    embeddings = _load_block_embeddings(cache_path, block_ids)
+    if embeddings is None:
+        if progress_cb:
+            progress_cb(f"Đang tạo Voice DNA riêng cho {len(subs)} block SRT...")
+        segments = []
+        duration = len(full_audio) / sr
+        for sub in subs:
+            start = max(0.0, _sub_to_seconds(sub.start) - 0.03)
+            end = min(duration, _sub_to_seconds(sub.end) + 0.05)
+            segments.append(full_audio[int(start * sr):int(end * sr)])
+        embeddings = _encode_voice_blocks(segments, sr, progress_cb)
+        _save_block_embeddings(cache_path, block_ids, embeddings)
+    elif progress_cb:
+        progress_cb("Dùng lại block Voice DNA embeddings đã lưu (resume).")
+
+    rows = []
+    speaker_deltas = defaultdict(list)
+    for embedding, speaker in zip(embeddings, sub_speakers):
+        if embedding is None:
+            rows.append({"delta": None, "dna_name": None, "dna_score": 0.0})
+            continue
+        male_score, female_score, dna_name, dna_score = _dna_gender_scores(
+            embedding, dna_profiles,
+        )
+        delta = male_score - female_score
+        rows.append({
+            "delta": delta,
+            "dna_name": dna_name,
+            "dna_score": dna_score,
+        })
+        if speaker:
+            speaker_deltas[speaker].append(delta)
+
+    speaker_prior = {
+        speaker: float(np.median(values))
+        for speaker, values in speaker_deltas.items()
+        if values
+    }
+    for row, speaker in zip(rows, sub_speakers):
+        delta = row["delta"]
+        if delta is None:
+            row.update({"label": "unknown", "hybrid_margin": 0.0, "speaker_prior": 0.0})
+            continue
+        prior = speaker_prior.get(speaker, 0.0) if speaker else 0.0
+        hybrid = delta + BLOCK_DNA_SPEAKER_WEIGHT * prior
+        if abs(hybrid) < BLOCK_DNA_MIN_MARGIN:
+            label = "unknown"
+        else:
+            label = "male" if hybrid > 0 else "female"
+        row.update({
+            "label": label,
+            "hybrid_margin": abs(hybrid),
+            "speaker_prior": prior,
+        })
+    return rows
+
+
 def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
                      episode_name=None, progress_cb=None):
     """Chạy toàn bộ pipeline cho 1 cặp media+srt, trả về (txt_path, annotated_srt_path).
@@ -575,6 +747,7 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
             f"({total_samples} đoạn mẫu, tối đa {GENDER_MAX_SEGMENTS_PER_SPEAKER}/speaker, "
             f"resume {cached_count}/{len(speaker_names)})..."
         )
+    full_audio, sr = None, None
     if missing_speakers:
         full_audio, sr = sf.read(str(wav_path))
         if full_audio.ndim > 1:
@@ -624,23 +797,29 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
         progress_cb("Dùng lại toàn bộ Voice DNA profiles đã lưu (resume).")
 
     if progress_cb:
-        progress_cb("Đang gán nhãn từng block SRT...")
+        progress_cb("Đang chấm Voice DNA hybrid cho từng block SRT...")
     subs = pysrt.open(str(srt_path), encoding="utf-8")
     sub_speakers = _find_speakers_for_subs(subs, speaker_turns)
+    if full_audio is None:
+        full_audio, sr = sf.read(str(wav_path))
+        if full_audio.ndim > 1:
+            full_audio = full_audio.mean(axis=1)
+    block_cache_path = _block_embedding_cache_path(resume_dir, episode_name, srt_path)
+    block_dna = _classify_blocks_with_dna(
+        subs, sub_speakers, full_audio, sr, dna_profiles,
+        cache_path=block_cache_path, progress_cb=progress_cb,
+    )
     results = []
     total_subs = len(subs)
     for idx, sub in enumerate(subs, start=1):
         speaker = sub_speakers[idx - 1]
-        info = speaker_gender.get(speaker, {
-            "label": "unknown", "confidence": 0.0, "dna_name": None,
-            "dna_margin": 0.0,
-        })
+        info = block_dna[idx - 1]
         results.append({
             "index": sub.index, "start": str(sub.start), "end": str(sub.end),
             "text": sub.text, "speaker": speaker or "unknown",
-            "gender": info["label"], "confidence": round(info["confidence"], 3),
+            "gender": info["label"], "confidence": round(info["dna_score"], 3),
             "dna_name": info.get("dna_name"),
-            "dna_margin": round(float(info.get("dna_margin", 0.0)), 3),
+            "dna_margin": round(float(info.get("hybrid_margin", 0.0)), 3),
         })
         if progress_cb and (idx == 1 or idx == total_subs or idx % 100 == 0):
             gender_vi = GENDER_LABEL_VI.get(info["label"], info["label"])
@@ -648,7 +827,7 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
                 f"Đã gán {idx}/{total_subs} block "
                 f"(block {sub.index} -> {speaker or 'unknown'} | {gender_vi} "
                 f"| DNA {info.get('dna_name') or 'NO_MATCH'} "
-                f"| score {info['confidence']:.3f})"
+                f"| margin {info.get('hybrid_margin', 0.0):.3f})"
             )
 
     # Ghi ra file .tmp roi os.replace() (atomic) thay vi ghi thang vao *_voiceblock.txt/
