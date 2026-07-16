@@ -955,11 +955,12 @@ def _autowatch_loop():
     last_idle_log = 0.0
     while True:
         try:
-            # Tick 3s de tail log worker cho muot, nhung chi keo Drive input moi
-            # AUTO_WATCH_INTERVAL - keo moi tick se spam log "Da keo tu Drive"
-            # lien tuc trong khi worker con dang chay lau (vd diarization).
+            # Khi dang co worker/chunk chay, chi tail log tien do. Khong can
+            # keo Drive input moi lien tuc vi GPU da kin viec, lai lam log on
+            # va co the ton thoi gian voi file dai.
             now = time.time()
-            if RCLONE_INPUT_REMOTE and now - last_input_pull >= AUTO_WATCH_INTERVAL:
+            if (not active and not chunk_jobs and RCLONE_INPUT_REMOTE
+                    and now - last_input_pull >= AUTO_WATCH_INTERVAL):
                 _rclone_pull_dir(RCLONE_INPUT_REMOTE, INPUT_DIR, skip_existing=True)
                 last_input_pull = now
 
