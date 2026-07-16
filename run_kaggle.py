@@ -10,6 +10,7 @@ trong MyDrive/detach-voice-gender nen khong bao gio mat.
 """
 import importlib.util
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,16 @@ def run_foreground(cmd, **kwargs):
     except subprocess.CalledProcessError as exc:
         print(f"[{_ts()}] [!] Lenh loi code {exc.returncode}: {' '.join(str(x) for x in cmd)}", flush=True)
         raise
+
+
+def run_app_in_current_process(app_path: Path):
+    print(f"[{_ts()}] [*] Chay app trong cung process: {app_path}", flush=True)
+    old_argv = sys.argv[:]
+    try:
+        sys.argv = [str(app_path)]
+        runpy.run_path(str(app_path), run_name="__main__")
+    finally:
+        sys.argv = old_argv
 
 
 def _module_installed(name: str) -> bool:
@@ -188,7 +199,7 @@ def main():
         print("[*] Dang mo Gradio app...", flush=True)
 
     os.chdir(app_dir)
-    run_foreground([sys.executable, "-u", "app.py"])
+    run_app_in_current_process(app_dir / "app.py")
 
 
 if __name__ == "__main__":
