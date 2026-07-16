@@ -222,11 +222,22 @@ def configure_model_cache(data_root: Path):
     print(f"[*] HuggingFace model cache: {cache_root}", flush=True)
 
     if model_remote and shutil.which("rclone") is not None:
-        print(f"[*] Dang keo model cache tu Drive neu co: {model_remote}", flush=True)
-        subprocess.run(
-            ["rclone", "copy", "-q", model_remote, str(cache_root), "--fast-list", "--tpslimit", "3", "--tpslimit-burst", "1"],
-            check=False, timeout=3600,
+        print(f"[*] Kiem tra model cache tren Drive: {model_remote}", flush=True)
+        probe = subprocess.run(
+            ["rclone", "lsf", model_remote, "--max-depth", "1", "--fast-list"],
+            capture_output=True, text=True, check=False, timeout=60,
         )
+        if probe.returncode != 0:
+            print("[*] Chua co model cache tren Drive, bo qua buoc keo model.", flush=True)
+            return
+        print(f"[*] Dang keo model cache tu Drive: {model_remote}", flush=True)
+        try:
+            subprocess.run(
+                ["rclone", "copy", "-q", model_remote, str(cache_root), "--fast-list", "--tpslimit", "3", "--tpslimit-burst", "1"],
+                check=False, timeout=3600,
+            )
+        except subprocess.TimeoutExpired:
+            print("[!] Keo model cache qua lau, bo qua va se tai tu HuggingFace neu can.", flush=True)
 
 
 def detect_platform_dirs():
