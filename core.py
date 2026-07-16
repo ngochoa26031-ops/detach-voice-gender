@@ -249,6 +249,33 @@ def _find_speaker(block_start, block_end, speaker_turns):
     return best_speaker
 
 
+def _find_speakers_for_subs(subs, speaker_turns):
+    """Gan speaker cho tat ca subtitle bang mot lan quet timeline.
+
+    Cach cu goi _find_speaker() cho tung block va moi lan lai scan toan bo
+    diarization turns. Voi file dai, day la doan CPU cham nhat sau gender.
+    """
+    turns = sorted(speaker_turns, key=lambda item: item[0])
+    speakers = []
+    active_start = 0
+    for sub in subs:
+        block_start = _sub_to_seconds(sub.start)
+        block_end = _sub_to_seconds(sub.end)
+        while active_start < len(turns) and turns[active_start][1] <= block_start:
+            active_start += 1
+
+        best_speaker, best_overlap = None, 0.0
+        idx = active_start
+        while idx < len(turns) and turns[idx][0] < block_end:
+            t_start, t_end, speaker = turns[idx]
+            overlap = min(block_end, t_end) - max(block_start, t_start)
+            if overlap > best_overlap:
+                best_overlap, best_speaker = overlap, speaker
+            idx += 1
+        speakers.append(best_speaker)
+    return speakers
+
+
 def _short_text(text, limit=80):
     clean = " ".join(str(text).split())
     if len(clean) <= limit:
@@ -465,22 +492,23 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
     if progress_cb:
         progress_cb("Đang gán nhãn từng block SRT...")
     subs = pysrt.open(str(srt_path), encoding="utf-8")
+    sub_speakers = _find_speakers_for_subs(subs, speaker_turns)
     results = []
-    for sub in subs:
-        b_start = _sub_to_seconds(sub.start)
-        b_end = _sub_to_seconds(sub.end)
-        speaker = _find_speaker(b_start, b_end, speaker_turns)
+    total_subs = len(subs)
+    for idx, sub in enumerate(subs, start=1):
+        speaker = sub_speakers[idx - 1]
         info = speaker_gender.get(speaker, {"label": "unknown", "confidence": 0.0})
         results.append({
             "index": sub.index, "start": str(sub.start), "end": str(sub.end),
             "text": sub.text, "speaker": speaker or "unknown",
             "gender": info["label"], "confidence": round(info["confidence"], 3),
         })
-        if progress_cb:
+        if progress_cb and (idx == 1 or idx == total_subs or idx % 100 == 0):
             gender_vi = GENDER_LABEL_VI.get(info["label"], info["label"])
             progress_cb(
-                f"Block {sub.index} -> {speaker or 'unknown'} | {gender_vi} "
-                f"| conf {info['confidence']:.3f} | {_short_text(sub.text)}"
+                f"Đã gán {idx}/{total_subs} block "
+                f"(block {sub.index} -> {speaker or 'unknown'} | {gender_vi} "
+                f"| conf {info['confidence']:.3f})"
             )
 
     # Ghi ra file .tmp roi os.replace() (atomic) thay vi ghi thang vao *_voiceblock.txt/
