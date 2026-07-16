@@ -314,7 +314,7 @@ def _run_pipeline(media_path, srt_path, episode_name, progress=None):
         _rclone_push_dir(os.path.join(RESUME_DIR, episode_name),
                          f"{RCLONE_RESUME_REMOTE.rstrip('/')}/{episode_name}",
                          label="resume")
-    return txt_path, srt_out_path
+    return txt_path, _speaker_txt_path(out_dir, srt_path), srt_out_path
 
 
 PROCESS_LOCK = threading.Lock()
@@ -362,13 +362,13 @@ def run_ui(episode_choice, media_upload, srt_upload, progress=None):
                     f"doi no xong roi thu lai (xem log console de biet tien do)."
                 )
             try:
-                txt_path, srt_out_path = _run_pipeline(media_path, srt_path, episode_name, progress)
+                txt_path, speaker_path, srt_out_path = _run_pipeline(media_path, srt_path, episode_name, progress)
             finally:
                 _release_lock(lock_path)
             progress(1, desc="Xong!")
             if EXIT_AFTER_DONE:
                 _schedule_exit_after_done()
-            return str(txt_path), str(srt_out_path), f"OK: da xu ly xong '{episode_name}'."
+            return str(txt_path), str(speaker_path), str(srt_out_path), f"OK: da xu ly xong '{episode_name}'."
     except Exception as exc:
         if gr is not None and isinstance(exc, gr.Error):
             raise
@@ -376,7 +376,7 @@ def run_ui(episode_choice, media_upload, srt_upload, progress=None):
             raise
         tb = traceback.format_exc()
         print(tb, flush=True)
-        return None, None, f"LOI:\n{exc}\n\n--- chi tiet ---\n{tb[-3000:]}"
+        return None, None, None, f"LOI:\n{exc}\n\n--- chi tiet ---\n{tb[-3000:]}"
 
 
 def refresh_input_list():
@@ -475,13 +475,52 @@ def _write_gender_txt(path, by_gender):
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
 
 
+def _read_speaker_txt(path):
+    rows = []
+    if not Path(path).is_file():
+        return rows
+    for line in Path(path).read_text(encoding="utf-8-sig").splitlines():
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) < 4 or not parts[3].startswith("blocks "):
+            continue
+        rows.append({
+            "speaker": parts[0],
+            "gender": parts[1],
+            "confidence": parts[2],
+            "indices": _parse_range_items(parts[3][len("blocks "):]),
+        })
+    return rows
+
+
+def _write_speaker_txt(path, rows):
+    lines = []
+    for row in rows:
+        indices = row.get("indices", [])
+        if not indices:
+            continue
+        lines.append(
+            f"{row['speaker']} | {row['gender']} | {row['confidence']} | "
+            f"blocks {_format_ranges(indices)}"
+        )
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+
+
 def _find_voiceblock_txt(out_dir):
     files = sorted(Path(out_dir).glob("*_voiceblock.txt"))
     return files[0] if files else None
 
 
+def _find_speaker_txt(out_dir):
+    files = sorted(Path(out_dir).glob("*_speaker.txt"))
+    return files[0] if files else None
+
+
 def _voiceblock_txt_path(out_dir, srt_path):
     return Path(out_dir) / f"{Path(srt_path).stem}_voiceblock.txt"
+
+
+def _speaker_txt_path(out_dir, srt_path):
+    return Path(out_dir) / f"{Path(srt_path).stem}_speaker.txt"
 
 
 def _chunk_subtitles_by_count(srt_path, chunk_count):
@@ -569,6 +608,7 @@ def _prepare_episode_chunks(pair, episode_name):
 
 def _merge_chunk_outputs(episode_name, chunks, original_srt_path):
     by_gender = {"male": [], "female": [], "child": [], "unknown": []}
+    speaker_rows = []
     for chunk in chunks:
         chunk_txt = _find_voiceblock_txt(chunk["out_dir"])
         if chunk_txt is None:
@@ -577,10 +617,16 @@ def _merge_chunk_outputs(episode_name, chunks, original_srt_path):
         for gender, values in chunk_gender.items():
             by_gender[gender].extend(values)
 
+        chunk_speaker_txt = _find_speaker_txt(chunk["out_dir"])
+        for row in _read_speaker_txt(chunk_speaker_txt) if chunk_speaker_txt else []:
+            row["speaker"] = f"part{chunk['part']:03d}/{row['speaker']}"
+            speaker_rows.append(row)
+
     out_dir = Path(OUTPUT_DIR) / episode_name
     out_dir.mkdir(parents=True, exist_ok=True)
     final_txt = _voiceblock_txt_path(out_dir, original_srt_path)
     _write_gender_txt(final_txt, by_gender)
+    _write_speaker_txt(_speaker_txt_path(out_dir, original_srt_path), speaker_rows)
 
     gender_by_index = {}
     for gender, values in by_gender.items():
@@ -909,12 +955,13 @@ if not HEADLESS:
                 btn = gr.Button("Xac dinh gioi tinh", variant="primary")
             with gr.Column():
                 txt_out = gr.File(label="<ten_srt>_voiceblock.txt")
+                speaker_out = gr.File(label="<ten_srt>_speaker.txt")
                 srt_out = gr.File(label="annotated.srt")
                 log = gr.Textbox(label="Log / Trang thai", lines=10)
 
         refresh_btn.click(refresh_input_list, outputs=[episode_dd])
         clear_btn.click(clear_old_data, outputs=[episode_dd, log])
-        btn.click(run_ui, inputs=[episode_dd, media_in, srt_in], outputs=[txt_out, srt_out, log])
+        btn.click(run_ui, inputs=[episode_dd, media_in, srt_in], outputs=[txt_out, speaker_out, srt_out, log])
 
 if __name__ == "__main__":
     if HEADLESS:

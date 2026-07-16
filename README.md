@@ -90,6 +90,8 @@ mặc định là `./detach-voice-gender/{input,output,resume}` trong thư mục
 Mỗi episode có 1 thư mục `output/<tên_episode>/` chứa:
 - `<tên_srt>_voiceblock.txt` — danh sách range block theo giới tính, ví dụ:
   `Nam: 1-33, 36-59` / `Nữ: 34-35, 60-61`
+- `<tên_srt>_speaker.txt` — danh sách range block theo từng speaker, ví dụ:
+  `SPEAKER_12 | Nam | conf 0.934 | blocks 1347-1348, 1354`
 - `annotated.srt` — srt gốc, thêm tiền tố `[speakerX|gender]` mỗi dòng thoại
 
 ## Cấu trúc mã nguồn

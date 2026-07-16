@@ -271,8 +271,32 @@ def _write_gender_ranges_txt(txt_path, results):
     txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
 
 
+def _write_speaker_ranges_txt(txt_path, results):
+    by_speaker = defaultdict(list)
+    speaker_info = {}
+    for row in results:
+        speaker = row["speaker"]
+        by_speaker[speaker].append(row["index"])
+        speaker_info.setdefault(speaker, (row["gender"], row["confidence"]))
+
+    lines = []
+    for speaker in sorted(by_speaker):
+        gender, confidence = speaker_info.get(speaker, ("unknown", 0.0))
+        gender_vi = GENDER_LABEL_VI.get(gender, gender)
+        lines.append(
+            f"{speaker} | {gender_vi} | conf {confidence:.3f} | "
+            f"blocks {_format_ranges(by_speaker[speaker])}"
+        )
+
+    txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+
+
 def _voiceblock_txt_path(out_dir, srt_path):
     return Path(out_dir) / f"{Path(srt_path).stem}_voiceblock.txt"
+
+
+def _speaker_txt_path(out_dir, srt_path):
+    return Path(out_dir) / f"{Path(srt_path).stem}_speaker.txt"
 
 
 def _extract_speaker_turns(diarization):
@@ -421,6 +445,13 @@ def process_episode(media_path, srt_path, out_dir, hf_token, resume_dir=None,
     os.replace(txt_tmp, txt_path)
     if progress_cb:
         progress_cb(f"Da ghi ket qua TXT: {txt_path}")
+
+    speaker_txt_path = _speaker_txt_path(out_dir, srt_path)
+    speaker_tmp = speaker_txt_path.with_suffix(".txt.tmp")
+    _write_speaker_ranges_txt(speaker_tmp, results)
+    os.replace(speaker_tmp, speaker_txt_path)
+    if progress_cb:
+        progress_cb(f"Da ghi speaker TXT: {speaker_txt_path}")
 
     annotated_srt_path = out_dir / "annotated.srt"
     srt_tmp = annotated_srt_path.with_suffix(".srt.tmp")
