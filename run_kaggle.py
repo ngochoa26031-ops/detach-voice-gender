@@ -120,15 +120,29 @@ def _pyannote_is_stale_pin() -> bool:
 
 
 def install_requirements(app_dir: Path):
-    need_mods = ["gradio", "pyannote.audio", "speechbrain", "transformers", "pysrt"]
-    if all(_module_installed(m) for m in need_mods) and not _pyannote_is_stale_pin():
+    required = [
+        ("gradio", "gradio"),
+        ("pyannote.audio", "pyannote.audio"),
+        ("speechbrain", "speechbrain"),
+        ("transformers", "transformers"),
+        ("safetensors", "safetensors"),
+        ("librosa", "librosa"),
+        ("pysrt", "pysrt"),
+        ("soundfile", "soundfile"),
+    ]
+    missing = [pkg for module, pkg in required if not _module_installed(module)]
+    if not missing and not _pyannote_is_stale_pin():
         print("[*] Thu vien Python da co, bo qua cai dat.", flush=True)
         return
+
     if _pyannote_is_stale_pin():
-        print("[*] pyannote.audio dang la ban cu <4.0 (khong hop torchaudio moi), nang cap...", flush=True)
-    else:
-        print("[*] Dang cai thu vien Python lan dau trong session nay...", flush=True)
-    run([sys.executable, "-m", "pip", "install", "-q", "-U", "-r", str(app_dir / "requirements.txt")])
+        print("[*] pyannote.audio dang la ban cu <4.0, chi nang cap rieng pyannote.audio...", flush=True)
+        run([sys.executable, "-m", "pip", "install", "-q", "-U", "pyannote.audio"])
+        missing = [pkg for pkg in missing if pkg != "pyannote.audio"]
+
+    if missing:
+        print(f"[*] Chi cai thu vien con thieu: {', '.join(missing)}", flush=True)
+        run([sys.executable, "-m", "pip", "install", "-q"] + missing)
 
 
 def load_hf_token():
