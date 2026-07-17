@@ -54,6 +54,10 @@ detach-voice-gender/
    kéo thêm model phụ này ngầm bên trong.)
    *(Chỉ cần làm 1 lần cho mỗi tài khoản HuggingFace.)*
 3. `Settings → Accelerator → GPU`, `Settings → Internet → On`.
+   Nên chọn GPU đời mới như T4/L4/A100 nếu có. Nếu Kaggle cấp Tesla P100
+   (`sm_60`) nhưng PyTorch trong runtime chỉ hỗ trợ `sm_70+`, tool sẽ tự
+   chuyển model sang CPU để tránh lỗi CUDA `no kernel image`; chạy được nhưng
+   chậm hơn đáng kể.
 4. Bấm **Run**. Notebook tự clone code mới nhất, cài thư viện (chỉ lần đầu
    trong session), mở app **Gradio**.
 5. Trong app: chọn episode từ danh sách (nếu đã bỏ file vào `input/`), hoặc

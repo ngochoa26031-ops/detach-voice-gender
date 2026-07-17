@@ -57,6 +57,44 @@ _dna_profiles = None
 _dna_fingerprint = None
 
 
+def _env_flag(name, default="0"):
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _select_torch_device(progress_cb=None):
+    if _env_flag("GENDERSFX_FORCE_CPU"):
+        msg = "GENDERSFX_FORCE_CPU=1, chay model tren CPU."
+        if progress_cb:
+            progress_cb(msg)
+        print(f"[*] {msg}", flush=True)
+        return torch.device("cpu")
+
+    if not torch.cuda.is_available():
+        return torch.device("cpu")
+
+    try:
+        name = torch.cuda.get_device_name(0)
+        major, minor = torch.cuda.get_device_capability(0)
+    except Exception as exc:
+        print(f"[!] Khong doc duoc thong tin CUDA ({exc}), chay model tren CPU.", flush=True)
+        return torch.device("cpu")
+
+    # Mot so runtime Kaggle/Colab cai PyTorch moi chi build kernel cho sm_70+.
+    # GPU cu nhu Tesla P100 la sm_60, neu ep chay CUDA se loi
+    # "no kernel image is available for execution on the device".
+    if major < 7:
+        msg = (
+            f"GPU {name} compute capability sm_{major}{minor} khong hop voi "
+            "ban PyTorch hien tai; tu dong chay model tren CPU de tranh loi CUDA."
+        )
+        if progress_cb:
+            progress_cb(msg)
+        print(f"[!] {msg}", flush=True)
+        return torch.device("cpu")
+
+    return torch.device("cuda")
+
+
 def _dna_library_fingerprint():
     global _dna_fingerprint
     if _dna_fingerprint is not None:
@@ -102,7 +140,7 @@ def ensure_models(hf_token: str, progress_cb=None):
     global _device, _diarization_pipeline, _speaker_encoder
 
     if _device is None:
-        _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        _device = _select_torch_device(progress_cb)
 
     if hf_token:
         # Dang nhap HF de MOI request (ke ca cua transformers, khong chi pyannote)
@@ -131,7 +169,22 @@ def ensure_models(hf_token: str, progress_cb=None):
                 Pipeline.from_pretrained, "pyannote/speaker-diarization-3.1",
                 use_auth_token=hf_token, progress_cb=progress_cb,
             )
-        _diarization_pipeline = pipeline.to(_device)
+        try:
+            _diarization_pipeline = pipeline.to(_device)
+        except Exception as exc:
+            message = str(exc).lower()
+            if _device.type == "cuda" and (
+                "no kernel image is available" in message
+                or "cudaerrornokernelimagefordevice" in message
+            ):
+                _device = torch.device("cpu")
+                msg = "CUDA khong tuong thich voi GPU hien tai, tu dong chuyen model sang CPU."
+                if progress_cb:
+                    progress_cb(msg)
+                print(f"[!] {msg}", flush=True)
+                _diarization_pipeline = pipeline.to(_device)
+            else:
+                raise
 
     if _speaker_encoder is None:
         if progress_cb:
