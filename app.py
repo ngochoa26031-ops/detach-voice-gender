@@ -152,18 +152,22 @@ def _rclone_pull_dir(remote, local_dir, skip_existing=False):
                 after_files = _snapshot_files(local_dir)
                 new_files = sorted(after_files - before_files)
                 ts = datetime.now().strftime("%H:%M:%S")
-                if new_files:
-                    preview = ", ".join(new_files[:6])
-                    more = f", +{len(new_files) - 6} file nua" if len(new_files) > 6 else ""
+                new_episode_names = _new_processable_episode_names(local_dir, new_files)
+                if new_episode_names:
+                    preview = ", ".join(new_episode_names[:6])
+                    more = (
+                        f", +{len(new_episode_names) - 6} episode nua"
+                        if len(new_episode_names) > 6 else ""
+                    )
                     print(
-                        f"[{ts}] [*] Quet Drive input thay {len(new_files)} file moi: "
+                        f"[{ts}] [*] Quet Drive input thay "
+                        f"{len(new_episode_names)} episode moi co the xu ly: "
                         f"{preview}{more}",
                         flush=True,
                     )
                 else:
                     print(
-                        f"[{ts}] [*] Quet Drive input: khong thay file moi "
-                        f"(file da co tren Kaggle duoc bo qua).",
+                        f"[{ts}] [*] Quet Drive input: khong phat hien file nao de xu ly.",
                         flush=True,
                     )
             else:
@@ -220,6 +224,21 @@ def _find_episode_pairs(folder):
         for stem in media_files
         if stem in srt_files
     }
+
+
+def _new_processable_episode_names(folder, new_files):
+    """Tra ve cac episode hop le co it nhat 1 file vua duoc keo ve."""
+    root = Path(folder)
+    new_files = set(new_files or [])
+    names = []
+    for name, pair in _find_episode_pairs(folder).items():
+        pair_rels = {
+            str(pair["media"].relative_to(root)).replace("\\", "/"),
+            str(pair["srt"].relative_to(root)).replace("\\", "/"),
+        }
+        if pair_rels & new_files:
+            names.append(name)
+    return sorted(names)
 
 
 def list_input_episodes():
@@ -1098,6 +1117,12 @@ def _autowatch_loop():
                     )
                     if locked:
                         print(f"[*] Episode dang bi lock: {', '.join(locked)}", flush=True)
+                    last_idle_log = now
+                elif not pairs and now - last_idle_log >= 30:
+                    print(
+                        "[*] Auto-watch: khong phat hien file nao de xu ly.",
+                        flush=True,
+                    )
                     last_idle_log = now
                 _schedule_exit_after_done()
                 time.sleep(AUTO_WATCH_INTERVAL)
